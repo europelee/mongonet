@@ -21,6 +21,9 @@ type ProxyRetryError struct {
 }
 
 func (e *ProxyRetryError) Error() string {
+	if e.RetryOnRs == "" {
+		return fmt.Sprintf("ProxyRetryError - going to retry on local replica set, %v times remaining", e.RetryCount)
+	}
 	return fmt.Sprintf("ProxyRetryError - going to retry on %s, %v times remaining", e.RetryOnRs, e.RetryCount)
 }
 
