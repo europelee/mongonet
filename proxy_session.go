@@ -43,7 +43,7 @@ type MetricsHook interface {
 }
 
 type MetricsHookFactory interface {
-	NewHook(metricName, labelName, labelValue string) (MetricsHook, error)
+	NewHook(metricName string, curryWithLabels map[string]string) (MetricsHook, error)
 }
 
 type ResponseInterceptor interface {
@@ -522,10 +522,10 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 
 	if ps.isMetricsEnabled {
 		requestProcessingElaspedTime := time.Since(requestProcessingStartTime).Seconds()
-		requestDurationHook.ObserveWithLabels(requestProcessingElaspedTime, map[string]string{"type": "request_total", "operation": metricOperationType})
+		requestDurationHook.ObserveWithLabels(requestProcessingElaspedTime, map[string]string{"operation": metricOperationType})
 		totalProxyProcessingTimeElaspsed += requestProcessingElaspedTime
 		defer func() {
-			hookErr := totalDurationHook.ObserveWithLabels(totalProxyProcessingTimeElaspsed, map[string]string{"type": "request_total", "operation": metricOperationType})
+			hookErr := totalDurationHook.ObserveWithLabels(totalProxyProcessingTimeElaspsed, map[string]string{"operation": metricOperationType})
 			if hookErr != nil {
 				ps.proxy.logger.Logf(slogger.WARN, "failed to observe totalDurationHook %v", hookErr)
 			}
@@ -536,14 +536,16 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 	totalDBRoundtripTime := 0.0
 	dbRoundTripTimerStart := time.Now()
 	err = mongoConn.conn.WriteWireMessage(ps.proxy.Context, m.Serialize())
+	if ps.isMetricsEnabled {
+		defer func() {
+			hookErr := dbRoundTripHook.ObserveWithLabels(totalDBRoundtripTime, map[string]string{"operation": metricOperationType})
+			if hookErr != nil {
+				ps.proxy.logger.Logf(slogger.WARN, "failed to observe dbRoundTripHook %v", hookErr)
+			}
+		}()
+	}
 	if err != nil {
 		if ps.isMetricsEnabled {
-			defer func() {
-				hookErr := dbRoundTripHook.ObserveWithLabels(totalDBRoundtripTime, map[string]string{"operation": metricOperationType})
-				if hookErr != nil {
-					ps.proxy.logger.Logf(slogger.WARN, "failed to observe dbRoundTripHook %v", hookErr)
-				}
-			}()
 			hookErr := requestErrorsHook.IncCounterGauge()
 			if hookErr != nil {
 				ps.proxy.logger.Logf(slogger.WARN, "failed to increment requestErrorsHook %v", hookErr)
@@ -676,7 +678,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		ps.logMessageTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, resp)
 		if ps.isMetricsEnabled {
 			responseDurationElasped := time.Since(responseDurationTimerStart).Seconds()
-			responseDurationHook.ObserveWithLabels(responseDurationElasped, map[string]string{"type": "response_total", "opertationType": metricOperationType})
+			responseDurationHook.ObserveWithLabels(responseDurationElasped, map[string]string{"operation": metricOperationType})
 			totalProxyProcessingTimeElaspsed += responseDurationElasped
 		}
 

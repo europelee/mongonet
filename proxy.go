@@ -261,22 +261,32 @@ func (p *Proxy) CreateWorker(session *Session) (ServerWorker, error) {
 		}
 
 		if ps.proxy.Config.CollectorHookFactory != nil {
-			requestDurationHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("processingDuration", "type", "request_total")
+			requestDurationHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("processingDuration", map[string]string{"type": "request_total"})
 			if err != nil {
 				return nil, err
 			}
 
-			responseDurationHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("processingDuration", "type", "response_total")
+			responseDurationHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("processingDuration", map[string]string{"type": "response_total"})
 			if err != nil {
 				return nil, err
 			}
 
-			requestErrorsHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("processingErrors", "type", "request")
+			totalDurationHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("processingDuration", map[string]string{"type": "round_trip_total"})
 			if err != nil {
 				return nil, err
 			}
 
-			responseErrorsHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("processingErrors", "type", "response")
+			requestErrorsHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("processingErrors", map[string]string{"type": "request"})
+			if err != nil {
+				return nil, err
+			}
+
+			responseErrorsHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("processingErrors", map[string]string{"type": "response"})
+			if err != nil {
+				return nil, err
+			}
+
+			dbRoundTripHook, err := ps.proxy.Config.CollectorHookFactory.NewHook("dbRoundTripDuration", map[string]string{})
 			if err != nil {
 				return nil, err
 			}
@@ -286,6 +296,8 @@ func (p *Proxy) CreateWorker(session *Session) (ServerWorker, error) {
 			ps.hooks["responseDurationHook"] = responseDurationHook
 			ps.hooks["requestErrorsHook"] = requestErrorsHook
 			ps.hooks["responseErrorsHook"] = responseErrorsHook
+			ps.hooks["totalDurationHook"] = totalDurationHook
+			ps.hooks["dbRoundTripHook"] = dbRoundTripHook
 
 			ps.isMetricsEnabled = true
 		}
