@@ -318,7 +318,7 @@ func wrapNetworkError(err error) error {
 }
 
 func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *ProxyRetryError, remoteRs string) (*MongoConnectionWrapper, error) {
-	var requestDurationHook, responseDurationHook, totalDurationHook, requestErrorsHook, responseErrorsHook, dbRoundTripHook MetricsHook
+	var requestDurationHook, responseDurationHook, totalDurationHook, requestErrorsHook, responseErrorsHook, dbRoundTripHook, percentageTimeSpentInProxy MetricsHook
 
 	if ps.isMetricsEnabled {
 		var ok bool
@@ -345,6 +345,10 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		dbRoundTripHook, ok = ps.hooks["dbRoundTripHook"]
 		if !ok {
 			return nil, fmt.Errorf("could not access the db round trip time metric hook")
+		}
+		percentageTimeSpentInProxy, ok = ps.hooks["percentageTimeSpentInProxy"]
+		if !ok {
+			return nil, fmt.Errorf("could not access the percentage time spent in proxy metric hook")
 		}
 	}
 
@@ -541,6 +545,15 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 			hookErr := dbRoundTripHook.ObserveWithLabels(totalDBRoundtripTime, map[string]string{"operation": metricOperationType})
 			if hookErr != nil {
 				ps.proxy.logger.Logf(slogger.WARN, "failed to observe dbRoundTripHook %v", hookErr)
+			}
+			totalTime := (totalDBRoundtripTime + totalProxyProcessingTimeElaspsed)
+			if totalTime <= 0 {
+				ps.proxy.logger.Logf(slogger.WARN, "total time spent in proxy + db is <= 0 with value %v", totalTime)
+			} else {
+				hookErr = percentageTimeSpentInProxy.ObserveWithLabels(totalProxyProcessingTimeElaspsed/totalTime, map[string]string{"operation": metricOperationType})
+				if hookErr != nil {
+					ps.proxy.logger.Logf(slogger.WARN, "failed to observe percentageTimeSpentInProxy %v", hookErr)
+				}
 			}
 		}()
 	}

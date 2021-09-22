@@ -291,6 +291,11 @@ func (p *Proxy) CreateWorker(session *Session) (ServerWorker, error) {
 				return nil, err
 			}
 
+			percentageTimeSpentInProxy, err := ps.proxy.Config.CollectorHookFactory.NewHook("percentageTimeSpentInProxy", map[string]string{})
+			if err != nil {
+				return nil, err
+			}
+
 			ps.hooks = make(map[string]MetricsHook)
 			ps.hooks["requestDurationHook"] = requestDurationHook
 			ps.hooks["responseDurationHook"] = responseDurationHook
@@ -298,6 +303,7 @@ func (p *Proxy) CreateWorker(session *Session) (ServerWorker, error) {
 			ps.hooks["responseErrorsHook"] = responseErrorsHook
 			ps.hooks["totalDurationHook"] = totalDurationHook
 			ps.hooks["dbRoundTripHook"] = dbRoundTripHook
+			ps.hooks["percentageTimeSpentInProxy"] = percentageTimeSpentInProxy
 
 			ps.isMetricsEnabled = true
 		}
