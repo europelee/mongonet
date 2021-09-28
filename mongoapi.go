@@ -25,6 +25,7 @@ func RunCommandUsingRawBSON(cmd bson.D, client *mongo.Client, goctx context.Cont
 	if err != nil {
 		return nil, err
 	}
+	defer conn.Close()
 
 	sb, err := SimpleBSONConvert(cmd)
 	if err != nil {
