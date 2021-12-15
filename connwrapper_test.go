@@ -44,6 +44,34 @@ func TestProxyProtocol(t *testing.T) {
 		lengthEmptyBytes  = []byte{0x00, 0x00}
 		lengthPaddedBytes = []byte{0x00, 0x54}
 
+		// private endpoint values
+		emptyPrivateInfo = PrivateEndpointInfo{"", ""}
+
+		awsPESubtypeBytes   = []byte{0x01}
+		azurePESubtypeBytes = []byte{0x01}
+		badPESubtypeBytes   = []byte{0x55}
+
+		gcpType          = []byte{GCP_PE_UNIQUE_ID_TYPE}
+		lengthGcpBytes   = []byte{0x00, 0x08}
+		lengthV4GcpBytes = []byte{0x00, 0x17}
+		lengthV6GcpBytes = []byte{0x00, 0x2F}
+		gcpBytes         = []byte{0x03, 0x26, 0x18, 0x19, 0x20, 0x21, 0x22, 0x23}
+		encodedGcpPE     = PrivateEndpointInfo{"4A==", "AyYYGSAhIiM="}
+
+		awsType          = []byte{PP2_TYPE_AWS}
+		lengthAwsBytes   = []byte{0x00, 0x07}
+		lengthV4AwsBytes = []byte{0x00, 0x16}
+		awsPEBytes       = []byte{0x04, 0x1A, 0x24, 0x55, 0x66, 0x77}
+		awsBytes         = append(awsPESubtypeBytes, awsPEBytes...)
+		encodedAwsPe     = PrivateEndpointInfo{"6g==", "BBokVWZ3"}
+
+		azureType          = []byte{PP2_TYPE_AZURE}
+		lengthAzureBytes   = []byte{0x00, 0x05}
+		lengthV4AzureBytes = []byte{0x00, 0x14}
+		azurePEBytes       = []byte{0x14, 0x15, 0x12, 0xA4}
+		azureBytes         = append(azurePESubtypeBytes, azurePEBytes...)
+		encodedAzurePe     = PrivateEndpointInfo{"7g==", "FBUSpA=="}
+
 		// message
 		messageBytes = []byte("MESSAGE")
 
@@ -58,13 +86,14 @@ func TestProxyProtocol(t *testing.T) {
 	)
 
 	testCases := []struct {
-		name               string
-		bytes              []byte
-		expectedLocalAddr  string
-		expectedProxyAddr  string
-		expectedRemoteAddr string
-		expectedTargetAddr string
-		expectedErr        error
+		name                string
+		bytes               []byte
+		expectedLocalAddr   string
+		expectedProxyAddr   string
+		expectedRemoteAddr  string
+		expectedTargetAddr  string
+		expectedErr         error
+		expectedPrivateInfo PrivateEndpointInfo
 	}{
 		{
 			"not proxy protocol",
@@ -74,6 +103,7 @@ func TestProxyProtocol(t *testing.T) {
 			"192.168.0.1:5000",
 			"",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v1-invalid header 1",
@@ -83,6 +113,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid header"),
+			emptyPrivateInfo,
 		},
 		{
 			"v1-invalid header 2",
@@ -92,6 +123,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid header"),
+			emptyPrivateInfo,
 		},
 		{
 			"v1-invalid header 2",
@@ -101,6 +133,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid protocol and family"),
+			emptyPrivateInfo,
 		},
 		{
 			"v1-invalid src ip address",
@@ -110,6 +143,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid ip address"),
+			emptyPrivateInfo,
 		},
 		{
 			"v1-invalid dst ip address",
@@ -119,6 +153,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid ip address"),
+			emptyPrivateInfo,
 		},
 		{
 			"v1-invalid src port",
@@ -128,6 +163,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid port number"),
+			emptyPrivateInfo,
 		},
 		{
 			"v1-invalid dst port",
@@ -137,6 +173,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid port number"),
+			emptyPrivateInfo,
 		},
 		{
 			"v1-unknown",
@@ -146,6 +183,7 @@ func TestProxyProtocol(t *testing.T) {
 			"192.168.0.1:5000",
 			"",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v1-unknown",
@@ -155,6 +193,7 @@ func TestProxyProtocol(t *testing.T) {
 			"192.168.0.1:5000",
 			"",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v1-tcp4",
@@ -164,6 +203,7 @@ func TestProxyProtocol(t *testing.T) {
 			"127.0.0.1:65000",
 			"127.0.0.2:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v1-tcp6",
@@ -173,6 +213,7 @@ func TestProxyProtocol(t *testing.T) {
 			"[::1]:65000",
 			"[::2]:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-invalid version",
@@ -182,6 +223,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid version"),
+			emptyPrivateInfo,
 		},
 		{
 			"v2-invalid command",
@@ -191,6 +233,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid command"),
+			emptyPrivateInfo,
 		},
 		{
 			"v2-invalid address family",
@@ -200,6 +243,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid address family"),
+			emptyPrivateInfo,
 		},
 		{
 			"v2-invalid protocol",
@@ -209,6 +253,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid protocol"),
+			emptyPrivateInfo,
 		},
 		{
 			"v2-invalid ipv4 length",
@@ -218,6 +263,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid IPv4 payload"),
+			emptyPrivateInfo,
 		},
 		{
 			"v2-invalid ipv6 length",
@@ -227,6 +273,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid IPv6 payload"),
+			emptyPrivateInfo,
 		},
 		{
 			"v2-local",
@@ -236,6 +283,7 @@ func TestProxyProtocol(t *testing.T) {
 			"192.168.0.1:5000",
 			"",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-local-tcp-ipv4 with extra bytes",
@@ -245,6 +293,7 @@ func TestProxyProtocol(t *testing.T) {
 			"192.168.0.1:5000",
 			"",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-local-tcp-ipv6 with extra bytes",
@@ -254,6 +303,7 @@ func TestProxyProtocol(t *testing.T) {
 			"192.168.0.1:5000",
 			"",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-proxy-tcp-ipv4",
@@ -263,6 +313,7 @@ func TestProxyProtocol(t *testing.T) {
 			"127.0.0.1:65000",
 			"127.0.0.2:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-proxy-tcp-ipv4 with extra bytes",
@@ -272,6 +323,7 @@ func TestProxyProtocol(t *testing.T) {
 			"127.0.0.1:65000",
 			"127.0.0.2:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-proxy-tcp-ipv6",
@@ -281,6 +333,7 @@ func TestProxyProtocol(t *testing.T) {
 			"[::1]:65000",
 			"[::2]:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-proxy-tcp-ipv6 with extra bytes",
@@ -290,6 +343,7 @@ func TestProxyProtocol(t *testing.T) {
 			"[::1]:65000",
 			"[::2]:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-proxy-udp-ipv4",
@@ -299,6 +353,7 @@ func TestProxyProtocol(t *testing.T) {
 			"127.0.0.1:65000",
 			"127.0.0.2:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-proxy-udp-ipv4 with extra bytes",
@@ -308,6 +363,7 @@ func TestProxyProtocol(t *testing.T) {
 			"127.0.0.1:65000",
 			"127.0.0.2:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-proxy-udp-ipv6",
@@ -317,6 +373,7 @@ func TestProxyProtocol(t *testing.T) {
 			"[::1]:65000",
 			"[::2]:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"v2-proxy-udp-ipv6 with extra bytes",
@@ -326,6 +383,7 @@ func TestProxyProtocol(t *testing.T) {
 			"[::1]:65000",
 			"[::2]:65001",
 			nil,
+			emptyPrivateInfo,
 		},
 		{
 			"unix sockets",
@@ -335,6 +393,7 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("unix sockets are not supported"),
+			emptyPrivateInfo,
 		},
 		{
 			"not enough data",
@@ -344,6 +403,117 @@ func TestProxyProtocol(t *testing.T) {
 			"",
 			"",
 			errors.New("invalid header"),
+			emptyPrivateInfo,
+		},
+		{
+			"v2-proxy-tcp-ipv4 gcp PE",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, lengthV4GcpBytes, v4AddressesWithPortsBytes, gcpType, lengthGcpBytes, gcpBytes, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			nil,
+			encodedGcpPE,
+		},
+		{
+			"v2-proxy-tcp-ipv6 gcp PE",
+			concat(v2SignatureBytes, proxyBytes, tcpV6Bytes, lengthV6GcpBytes, v6AddressesWithPortsBytes, gcpType, lengthGcpBytes, gcpBytes, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"[::1]:65000",
+			"[::2]:65001",
+			nil,
+			encodedGcpPE,
+		},
+		{
+			"v2-proxy-tcp-ipv4 unused TLV + gcp PE",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, []byte{0x00, 0x1D}, v4AddressesWithPortsBytes, []byte{0x55}, []byte{0x00, 0x03}, []byte{0x33, 0xAA, 0xA4}, gcpType, lengthGcpBytes, gcpBytes, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			nil,
+			encodedGcpPE,
+		},
+		{
+			"v2-proxy-tcp-ipv4 gcp PE wrong length",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, lengthV4GcpBytes, v4AddressesWithPortsBytes, gcpType, lengthAzureBytes, azureBytes, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			errors.New("unexpected length 5 found for GCP_PE_UNIQUE_ID_TYPE TLV, expected 8"),
+			emptyPrivateInfo,
+		},
+		{
+			"v2-proxy-tcp-ipv4 aws PE",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, lengthV4AwsBytes, v4AddressesWithPortsBytes, awsType, lengthAwsBytes, awsBytes, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			nil,
+			encodedAwsPe,
+		},
+		{
+			"v2-proxy-tcp-ipv4 aws PE wrong subtype",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, lengthV4AwsBytes, v4AddressesWithPortsBytes, awsType, lengthAwsBytes, badPESubtypeBytes, awsPEBytes, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			nil,
+			emptyPrivateInfo,
+		},
+		{
+			"v2-proxy-tcp-ipv4 aws PE zero length",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, lengthV4AwsBytes, v4AddressesWithPortsBytes, awsType, []byte{0x00, 0x00}, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			errors.New("unexpected 0 length found for PP2_TYPE_AWS TVL, unable to read subtype"),
+			emptyPrivateInfo,
+		},
+		{
+			"v2-proxy-tcp-ipv4 azure PE",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, lengthV4AzureBytes, v4AddressesWithPortsBytes, azureType, lengthAzureBytes, azureBytes, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			nil,
+			encodedAzurePe,
+		},
+		{
+			"v2-proxy-tcp-ipv4 azure PE wrong subtype",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, lengthV4AzureBytes, v4AddressesWithPortsBytes, azureType, lengthAzureBytes, badPESubtypeBytes, azurePEBytes, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			nil,
+			emptyPrivateInfo,
+		},
+		{
+			"v2-proxy-tcp-ipv4 azure PE wrong length",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, lengthV4AwsBytes, v4AddressesWithPortsBytes, azureType, lengthAwsBytes, azurePESubtypeBytes, awsPEBytes, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			errors.New("unexpected length 7 found for PP2_TYPE_AZURE TLV subtype 0x01, expected 5"),
+			emptyPrivateInfo,
+		},
+		{
+			"v2-proxy-tcp-ipv4 azure PE zero length",
+			concat(v2SignatureBytes, proxyBytes, tcpV4Bytes, lengthV4AwsBytes, v4AddressesWithPortsBytes, azureType, []byte{0x00, 0x00}, messageBytes),
+			"192.168.0.2:5001",
+			"192.168.0.1:5000",
+			"127.0.0.1:65000",
+			"127.0.0.2:65001",
+			errors.New("unexpected 0 length found for PP2_TYPE_AZURE TVL, unable to read subtype"),
+			emptyPrivateInfo,
 		},
 	}
 
@@ -377,6 +547,10 @@ func TestProxyProtocol(t *testing.T) {
 
 			if subject.IsProxied() && tc.expectedTargetAddr != subject.TargetAddr().String() {
 				t.Fatalf("expected target address %v, but got %v", tc.expectedTargetAddr, subject.TargetAddr())
+			}
+
+			if tc.expectedPrivateInfo != subject.PrivateEndpointInfo() {
+				t.Fatalf("expected target private endpoint id %v, but got %v", tc.expectedPrivateInfo, subject.PrivateEndpointInfo())
 			}
 
 			actualMessageBytes := make([]byte, len(messageBytes))

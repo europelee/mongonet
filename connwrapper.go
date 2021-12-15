@@ -3,6 +3,7 @@ package mongonet
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -18,6 +19,11 @@ var (
 	v2Signature = []byte{0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A}
 )
 
+type PrivateEndpointInfo struct {
+	privateEndpointType string
+	privateEndpointId   string
+}
+
 type Conn struct {
 	wrapped net.Conn
 	rbuf    *bufio.Reader
@@ -27,7 +33,23 @@ type Conn struct {
 	proxy  net.Addr
 	remote net.Addr
 	target net.Addr
+
+	privateEndpointInfo PrivateEndpointInfo
 }
+
+func (info *PrivateEndpointInfo) PrivateEndpointType() string {
+	return info.privateEndpointType
+}
+
+func (info *PrivateEndpointInfo) PrivateEndpointId() string {
+	return info.privateEndpointId
+}
+
+const (
+	PP2_TYPE_AWS          byte = 0xEA
+	PP2_TYPE_AZURE             = 0xEE
+	GCP_PE_UNIQUE_ID_TYPE      = 0xE0
+)
 
 func NewConn(wrapped net.Conn) (*Conn, error) {
 	c := &Conn{
@@ -100,6 +122,11 @@ func (c *Conn) Version() byte {
 // Write implements the io.Writer interface.
 func (c *Conn) Write(p []byte) (int, error) {
 	return c.wrapped.Write(p)
+}
+
+// PrivateEndpointInfo returns a PrivateEndpointInfo containing the Type and ID of the private endpoint if specified as part of the v2 header; otherwise "" fields.
+func (c *Conn) PrivateEndpointInfo() PrivateEndpointInfo {
+	return c.privateEndpointInfo
 }
 
 func (c *Conn) init() error {
@@ -224,6 +251,7 @@ func (c *Conn) initv2() error {
 	var dstIP net.IP
 	var srcPort uint16
 	var dstPort uint16
+	var nextByte int
 
 	switch addrProto.AddressFamily() {
 	case inet:
@@ -235,6 +263,7 @@ func (c *Conn) initv2() error {
 		dstIP = net.IPv4(payload[4], payload[5], payload[6], payload[7])
 		srcPort = binary.BigEndian.Uint16(payload[8:10])
 		dstPort = binary.BigEndian.Uint16(payload[10:12])
+		nextByte = 12
 	case inet6:
 		if len(payload) < 36 {
 			return errors.New("invalid IPv6 payload")
@@ -244,10 +273,12 @@ func (c *Conn) initv2() error {
 		dstIP = net.IP(payload[16:32])
 		srcPort = binary.BigEndian.Uint16(payload[32:34])
 		dstPort = binary.BigEndian.Uint16(payload[34:36])
+		nextByte = 36
 	case unix:
 		return errors.New("unix sockets are not supported")
 	case unspec:
-		// ignore
+		// ignore. Set nextByte to the end of the payload to skip attempting to parse TLVs
+		nextByte = len(payload)
 	default:
 		return errors.New("invalid address family")
 	}
@@ -276,6 +307,57 @@ func (c *Conn) initv2() error {
 	default:
 		if addrProto.AddressFamily() != unspec {
 			return errors.New("invalid protocol")
+		}
+	}
+
+	// if there are remaining bytes, attempt to process them as TLVs
+	for nextByte < len(payload) {
+		if nextByte+3 > len(payload) {
+			// choose to ignore the remaining bytes
+			break
+		}
+		tlvType := payload[nextByte]
+		tlvLength := int(binary.BigEndian.Uint16(payload[nextByte+1 : nextByte+3]))
+		if nextByte+3+tlvLength > len(payload) {
+			// choose to ignore the remaining bytes
+			break
+		}
+		tlvPayload := payload[nextByte+3 : nextByte+3+tlvLength]
+		nextByte += 3 + tlvLength
+		switch tlvType {
+		case PP2_TYPE_AWS:
+			if len(tlvPayload) == 0 {
+				return fmt.Errorf("unexpected 0 length found for PP2_TYPE_AWS TVL, unable to read subtype")
+			}
+			// currently only 0x01 subtype is supported
+			if tlvPayload[0] == 0x01 {
+				c.privateEndpointInfo = PrivateEndpointInfo{
+					base64.StdEncoding.EncodeToString([]byte{PP2_TYPE_AWS}),
+					base64.StdEncoding.EncodeToString(tlvPayload[1:]),
+				}
+			}
+		case PP2_TYPE_AZURE:
+			if len(tlvPayload) == 0 {
+				return fmt.Errorf("unexpected 0 length found for PP2_TYPE_AZURE TVL, unable to read subtype")
+			}
+			// currently only 0x01 subtype is supported
+			if tlvPayload[0] == 0x01 {
+				if tlvLength != 5 {
+					return fmt.Errorf("unexpected length %v found for PP2_TYPE_AZURE TLV subtype 0x01, expected 5", tlvLength)
+				}
+				c.privateEndpointInfo = PrivateEndpointInfo{
+					base64.StdEncoding.EncodeToString([]byte{PP2_TYPE_AZURE}),
+					base64.StdEncoding.EncodeToString(tlvPayload[1:]),
+				}
+			}
+		case GCP_PE_UNIQUE_ID_TYPE:
+			if tlvLength != 8 {
+				return fmt.Errorf("unexpected length %v found for GCP_PE_UNIQUE_ID_TYPE TLV, expected 8", tlvLength)
+			}
+			c.privateEndpointInfo = PrivateEndpointInfo{
+				base64.StdEncoding.EncodeToString([]byte{GCP_PE_UNIQUE_ID_TYPE}),
+				base64.StdEncoding.EncodeToString(tlvPayload),
+			}
 		}
 	}
 

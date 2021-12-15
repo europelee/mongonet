@@ -23,6 +23,8 @@ type Session struct {
 	tlsConn       *tls.Conn
 
 	proxiedConnection bool
+
+	privateEndpointInfo PrivateEndpointInfo
 }
 
 var ErrUnknownOpcode = errors.New("unknown opcode")
@@ -39,6 +41,10 @@ func (s *Session) Connection() io.ReadWriteCloser {
 
 func (s *Session) GetTLSConnection() *tls.Conn {
 	return s.tlsConn
+}
+
+func (s *Session) GetPrivateEndpointInfo() PrivateEndpointInfo {
+	return s.privateEndpointInfo
 }
 
 func (s *Session) Logf(level slogger.Level, messageFmt string, args ...interface{}) (*slogger.Log, []error) {

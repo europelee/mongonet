@@ -264,6 +264,7 @@ func (s *Server) handleConnection(origConn net.Conn) {
 		"",
 		nil,
 		proxyProtoConn.IsProxied(),
+		proxyProtoConn.PrivateEndpointInfo(),
 	}
 
 	if _, ok := s.contextualWorkerFactory(); ok {
