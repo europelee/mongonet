@@ -55,6 +55,10 @@ func (s *Session) SetRemoteAddr(v net.Addr) {
 	s.remoteAddr = v
 }
 
+func (s *Session) SetPrivateEndpointId(id string) {
+	s.privateEndpointInfo.privateEndpointId = id
+}
+
 func (s *Session) ReadMessage() (Message, error) {
 	return ReadMessage(s.conn)
 }
