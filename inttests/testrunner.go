@@ -20,6 +20,74 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+func doIteration(logger *slogger.Logger, hostname string, proxyPort int, mode util.MongoConnectionMode,
+	workers int,
+	iter int,
+	failedCount *int32,
+	proxyClientFactory func(host string, port int, mode util.MongoConnectionMode, secondaryReads bool, appName string, ctx context.Context) (*mongo.Client, error),
+	testFunc func(logger *slogger.Logger, client *mongo.Client, workerNum, iteration int, ctx context.Context) (elapsed time.Duration, success bool, err error),
+) (results []int64, err error) {
+	logger.Logf(slogger.INFO, "*** starting iteration %v", iter)
+	var client *mongo.Client
+	ctx := context.Background()
+	client, err = proxyClientFactory(hostname, proxyPort, mode, false, "perftest", context.Background())
+	if err != nil {
+		logger.Logf(slogger.ERROR, "failed to init connection for cleanup. err=%v", err)
+		return []int64{}, err
+	}
+	defer client.Disconnect(ctx)
+	var wg sync.WaitGroup
+	for i := 0; i < workers*2; i++ {
+		// warm up the connection pool
+		wg.Add(1)
+		go func(wg *sync.WaitGroup) {
+			defer wg.Done()
+			runtime.Gosched()
+			if err := client.Ping(ctx, nil); err != nil {
+				logger.Logf(slogger.ERROR, "failed to ping. err=%v", err)
+				atomic.AddInt32(failedCount, 1)
+			}
+		}(&wg)
+	}
+	wg.Wait()
+	if v := atomic.LoadInt32(failedCount); v > 0 {
+		return results, fmt.Errorf("*** iteration %v has failures warming up the pool. breaking", iter)
+	}
+	var resLock sync.RWMutex
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(num int, wg *sync.WaitGroup) {
+			defer wg.Done()
+			runtime.Gosched()
+			var err error
+			var success bool
+			var elapsed time.Duration
+			logger.Logf(slogger.DEBUG, "running worker-%v", num)
+			if testFunc != nil {
+				elapsed, success, err = testFunc(logger, client, num, iter, ctx)
+				logger.Logf(slogger.INFO, "worker-%v success=%v, elapsed=%v, err=%v", num, success, elapsed, err)
+				if !success {
+					logger.Logf(slogger.WARN, "worker-%v failed! err=%v", num, err)
+				}
+			}
+			if success {
+				resLock.Lock()
+				results = append(results, elapsed.Milliseconds())
+				resLock.Unlock()
+			}
+			if !success {
+				atomic.AddInt32(failedCount, 1)
+			}
+		}(i, &wg)
+	}
+	wg.Wait()
+	logger.Logf(slogger.INFO, "*** finished iteration %v", iter)
+	if atomic.LoadInt32(failedCount) > 0 {
+		return results, fmt.Errorf("*** iteration %v has failures. breaking", iter)
+	}
+	return results, nil
+}
+
 /*
 	DoConcurrencyTestRun - can be used by external applications to test out concurrency and pooling performance
 	preSetUpFunc will use a client over the underlying mongo
@@ -84,51 +152,14 @@ func DoConcurrencyTestRun(logger *slogger.Logger,
 		cleanupFunc(logger, client, ctx)
 	}()
 
-	var wg sync.WaitGroup
-ITERATIONS:
 	for j := 0; j < iterations; j++ {
-		logger.Logf(slogger.INFO, "*** starting iteration %v", j)
-		for i := 0; i < workers; i++ {
-			wg.Add(1)
-			go func(num int, wg *sync.WaitGroup) {
-				defer wg.Done()
-				runtime.Gosched()
-				var err error
-				var success bool
-				var elapsed time.Duration
-				logger.Logf(slogger.DEBUG, "running worker-%v", num)
-				if testFunc != nil {
-					var client *mongo.Client
-					ctx, cancelFunc := context.WithTimeout(context.Background(), util.ClientTimeoutSecForTests)
-					defer cancelFunc()
-					client, err = proxyClientFactory(hostname, proxyPort, mode, false, fmt.Sprintf("worker-%v", num), ctx)
-					if err != nil {
-						logger.Logf(slogger.ERROR, "failed to init connection for cleanup. err=%v", err)
-						return
-					}
-					defer client.Disconnect(ctx)
-					elapsed, success, err = testFunc(logger, client, num, j, ctx)
-					logger.Logf(slogger.INFO, "worker-%v success=%v, elapsed=%v, err=%v", num, success, elapsed, err)
-					if !success {
-						logger.Logf(slogger.WARN, "worker-%v failed! err=%v", num, err)
-					}
-				}
-				if success {
-					resLock.Lock()
-					results = append(results, elapsed.Milliseconds())
-					resLock.Unlock()
-				}
-				if !success {
-					atomic.AddInt32(&failedCount, 1)
-				}
-			}(i, &wg)
+		var results2 []int64
+		results2, err = doIteration(logger, hostname, proxyPort, mode, workers, j, &failedCount, proxyClientFactory, testFunc)
+		if err != nil {
+			logger.Logf(slogger.ERROR, "%v", err)
+			return
 		}
-		wg.Wait()
-		logger.Logf(slogger.INFO, "*** finished iteration %v", j)
-		if atomic.LoadInt32(&failedCount) > 0 {
-			logger.Logf(slogger.INFO, "*** iteration %v has failures. breaking", j)
-			break ITERATIONS
-		}
+		results = append(results, results2...)
 		time.Sleep(500 * time.Millisecond)
 	}
 	if len(results) == 0 {
@@ -157,7 +188,7 @@ ITERATIONS:
 	percentiles[80] = sortedResults[int(float32(len(sortedResults))*0.8)]
 	percentiles[90] = sortedResults[int(float32(len(sortedResults))*0.9)]
 	percentiles[95] = sortedResults[int(float32(len(sortedResults))*0.95)]
-	percentiles[99] = sortedResults[int(float32(len(sortedResults))*0.95)]
+	percentiles[99] = sortedResults[int(float32(len(sortedResults))*0.99)]
 	return
 }
 
@@ -262,8 +293,8 @@ func analyzeResults(err error, workers int, failedCount int32, avgLatencyMs, tar
 	if avgLatencyMs > targetAvgLatencyMs {
 		return fmt.Errorf("ERROR average latency %v > %v", avgLatencyMs, targetAvgLatencyMs)
 	}
-	if maxLatencyMs > targetMaxLatencyMs {
-		return fmt.Errorf("ERROR max latency %v > %v", maxLatencyMs, targetMaxLatencyMs)
+	if int64(percentiles[95]) > targetMaxLatencyMs {
+		return fmt.Errorf("ERROR 95-ile latency %v > %v", maxLatencyMs, targetMaxLatencyMs)
 	}
 	if len(results) == 0 {
 		return fmt.Errorf("ERROR no successful runs")
