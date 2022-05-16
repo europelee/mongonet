@@ -198,31 +198,35 @@ type BSONWalkVisitor interface {
 }
 
 // BSONWalkAll - recursively walks the BSON doc and applies the visitor when encountering the fieldName
-// If delete_me is encountered, it'll return an empty document for that element
+// If delete_me is encountered, it'll return an empty document for that BSON doc
+// If remove_field is encountered, it'll return the BSON doc with the field omitted
 func BSONWalkAll(doc bson.D, fieldName string, visitor BSONWalkVisitor) (bson.D, error) {
 	current := doc
-	for i, elem := range current {
+	docsToRemove := []int{}
+	for i := range current {
 		elemDoc := &(current)[i]
-		if elem.Key == fieldName {
+		if elemDoc.Key == fieldName {
 			err := visitor.Visit(elemDoc)
 			if err != nil {
 				if err == DELETE_ME {
 					return nil, nil
 				}
+				// if one field needs to be removed, store the index, and continue processing remaining fields/documents
 				if err == REMOVE_FIELD {
-					return append(current[:i], current[i+1:]...), nil
+					docsToRemove = append(docsToRemove, i)
+					continue
 				}
 				return nil, err
 			}
 		}
 		var valToUse []interface{}
-		switch val := elem.Value.(type) {
+		switch val := elemDoc.Value.(type) {
 		case bson.D:
 			newDoc, err := BSONWalkAll(val, fieldName, visitor)
 			if err != nil {
 				return nil, err
 			}
-			elem.Value = newDoc
+			elemDoc.Value = newDoc
 		case []bson.D:
 			for arrayOffset, sub := range val {
 				newDoc, err := BSONWalkAll(sub, fieldName, visitor)
@@ -254,7 +258,11 @@ func BSONWalkAll(doc bson.D, fieldName string, visitor BSONWalkVisitor) (bson.D,
 		}
 
 	}
-	return doc, nil
+	for i := len(docsToRemove) - 1; i >= 0; i-- {
+		current = append(current[:docsToRemove[i]], current[docsToRemove[i]+1:]...)
+
+	}
+	return current, nil
 }
 
 // BSONWalk - applies the visitor on the select path

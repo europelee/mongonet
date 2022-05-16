@@ -55,6 +55,31 @@ func (tw *testWalker) Visit(elem *bson.E) error {
 	return nil
 }
 
+type removeWalker struct {
+	seen []bson.E
+}
+
+func (rw *removeWalker) Visit(elem *bson.E) error {
+	rw.seen = append(rw.seen, *elem)
+	if elem.Value.(int) == 111 {
+		return REMOVE_FIELD
+	}
+	elem.Value = 17
+	return nil
+}
+
+type nestedDocOverwriteWalker struct {
+	seen []bson.E
+}
+
+func (erw *nestedDocOverwriteWalker) Visit(elem *bson.E) error {
+	erw.seen = append(erw.seen, *elem)
+
+	elem.Value = "I should be the only thing in this bson"
+
+	return nil
+}
+
 func TestBSONWalk1(test *testing.T) {
 	doc := bson.D{{"a", 1}, {"b", 3}}
 	walker := &testWalker{}
@@ -408,6 +433,150 @@ func TestBSONWalkAll6(test *testing.T) {
 	val3 := arr[2].(bson.D)
 	if len(val3) != 0 {
 		test.Errorf("element should've been deleted %s", doc)
+	}
+}
+
+func TestBSONWalkAll7(test *testing.T) {
+	doc := bson.D{
+		{"a", 1},
+		{"b", 3},
+		{"c", []interface{}{
+			bson.D{
+				{"x", 5},
+			},
+			bson.D{
+				{"a", 2},
+				{"y", 3},
+			},
+			bson.D{
+				{"z", 222},
+				{"a", 111},
+				{"b", 2},
+			},
+			bson.D{
+				{"subBSON",
+					bson.D{
+						{"y", 121},
+						{"a", 111},
+						{"b", 232},
+						{"subSubBSON",
+							bson.D{
+								{"a", 111},
+								{"d", 223},
+								{"subSubSubBSON",
+									bson.D{
+										{"subSubSubSubBSON",
+											bson.D{
+												{"d", 242},
+												{"a", 111},
+											},
+										},
+										{"d", 232},
+										{"a", 1},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}},
+		{"d", []interface{}{"1", "2"}},
+	}
+	walker := &removeWalker{}
+	doc, err := BSONWalkAll(doc, "a", walker)
+	if err != nil {
+		test.Errorf("why did we get an error %s", err)
+	}
+	if len(walker.seen) != 7 {
+		test.Errorf("wrong # saw %d", len(walker.seen))
+	}
+	cArr := doc[2].Value.([]interface{})
+	val := cArr[1].(bson.D)
+	if val[0].Value != 17 {
+		test.Errorf("incorrect sub-doc value")
+	}
+	val2 := cArr[0].(bson.D)
+	if val2[0].Value != 5 {
+		test.Errorf("incorrect sub-doc value")
+	}
+	val3 := cArr[2].(bson.D)
+	if len(val3) != 2 {
+		test.Errorf("element should've been deleted %v", doc)
+	}
+	val4 := cArr[3].(bson.D)
+	if len(val4) != 1 {
+		test.Errorf("element should have one sub-element %v", doc)
+	}
+	subBSONArr := val4[0].Value.(bson.D)
+	if len(subBSONArr) != 3 {
+		test.Errorf("element should've been deleted with no side-effects %v", doc)
+	}
+	subSubBSONArr := subBSONArr[2].Value.(bson.D)
+	if len(subSubBSONArr) != 2 {
+		test.Errorf("element should've been deleted with no side-effects %v", doc)
+	}
+	subSubSubBSONArr := subSubBSONArr[1].Value.(bson.D)
+	if len(subSubSubBSONArr) != 3 {
+		test.Errorf("no elements should've been deleted %v", doc)
+	}
+	subSubSubSubBSONArr := subSubSubBSONArr[0].Value.(bson.D)
+	if len(subSubSubSubBSONArr) != 1 {
+		test.Errorf("element should've been deleted with no side-effects %v", doc)
+	}
+}
+
+func TestBSONWalkAll8(test *testing.T) {
+	doc := bson.D{
+		{"a", 111},
+		{"b", 3},
+		{"a", 111},
+	}
+	walker := &removeWalker{}
+	doc, err := BSONWalkAll(doc, "a", walker)
+	if err != nil {
+		test.Errorf("why did we get an error %s", err)
+	}
+	if len(walker.seen) != 2 {
+		test.Errorf("wrong # saw %d", len(walker.seen))
+	}
+	if len(doc) != 1 {
+		test.Errorf("there should only be one element %v", doc)
+	}
+	if doc[0].Key != "b" || doc[0].Value != 3 {
+		test.Errorf("the only element should be {b: 3}, got %v", doc)
+	}
+}
+
+func TestBSONWalkAll9(test *testing.T) {
+	doc := bson.D{
+		{"w", bson.D{
+			{"a", bson.D{
+				{"c", 27},
+				{"b", 37},
+			}},
+			{"b", 3},
+		}},
+	}
+	walker := &nestedDocOverwriteWalker{}
+	doc, err := BSONWalkAll(doc, "a", walker)
+	if err != nil {
+		test.Errorf("why did we get an error %s", err)
+	}
+	if len(walker.seen) != 1 {
+		test.Errorf("wrong # saw %d", len(walker.seen))
+	}
+	if len(doc) != 1 {
+		test.Errorf("no elements should have been added/removed %v", doc)
+	}
+	w_inner := doc[0].Value.(bson.D)
+	if len(w_inner) != 2 {
+		test.Errorf("no fields should have been removed %v", doc)
+	}
+	w_a_inner := w_inner[0].Value.(string)
+
+	if w_a_inner != "I should be the only thing in this bson" {
+		test.Errorf("unexpected string value received %v", w_a_inner)
 	}
 }
 
