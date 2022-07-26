@@ -22,7 +22,10 @@ const (
 )
 
 type ProxyConfig struct {
-	ServerConfig
+	TCPServerConfig  TCPServerConfig
+	GRPCServerConfig GRPCServerConfig
+	LogLevel         slogger.Level
+	Appenders        []slogger.Appender
 
 	MongoURI           string
 	MongoHost          string
@@ -50,18 +53,24 @@ func NewProxyConfig(bindHost string, bindPort int, mongoUri, mongoHost string, m
 
 	syncTlsConfig := NewSyncTlsConfig()
 	return ProxyConfig{
-		ServerConfig{
+		TCPServerConfig{
+			true,
 			bindHost,
 			bindPort,
 			false, // UseSSL
 			nil,   // SSLKeys
 			syncTlsConfig,
-			0,           // MinTlsVersion
-			0,           // TCPKeepAlivePeriod
-			nil,         // CipherSuites
-			slogger.OFF, // LogLevel
-			nil,         // Appenders
+			0,   // MinTlsVersion
+			0,   // TCPKeepAlivePeriod
+			nil, // CipherSuites
 		},
+		GRPCServerConfig{
+			false,
+			"",
+			0,
+		},
+		slogger.OFF, // LogLevel
+		nil,         // Appenders
 		mongoUri,
 		mongoHost,
 		mongoPort,

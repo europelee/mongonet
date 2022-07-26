@@ -10,26 +10,62 @@ import (
 
 	"github.com/mongodb/slogger/v2/slogger"
 	"go.mongodb.org/mongo-driver/bson"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 type Session struct {
-	server     *Server
-	conn       io.ReadWriteCloser
-	remoteAddr net.Addr
+	tcpServer *TCPServer
+	conn      io.ReadWriteCloser
+	tlsConn   *tls.Conn
 
-	logger *slogger.Logger
+	grpcServer       *GRPCServer
+	stream           grpc.ServerStream
+	incomingMetaData metadata.MD
 
+	logger        *slogger.Logger
+	remoteAddr    net.Addr
 	SSLServerName string
-	tlsConn       *tls.Conn
 
-	proxiedConnection bool
-
+	proxiedConnection   bool
 	privateEndpointInfo PrivateEndpointInfo
+
+	sticky bool
 }
 
 var ErrUnknownOpcode = errors.New("unknown opcode")
 
 // ------------------
+
+func NewTCPSession(s *TCPServer, proxyProtoConn *Conn) *Session {
+	remoteAddr := proxyProtoConn.RemoteAddr()
+	return &Session{
+		tcpServer:           s,
+		remoteAddr:          remoteAddr,
+		logger:              s.loggerFactory(fmt.Sprintf("Session %s", remoteAddr)),
+		proxiedConnection:   proxyProtoConn.IsProxied(),
+		privateEndpointInfo: proxyProtoConn.PrivateEndpointInfo(),
+	}
+}
+
+func NewGRPCSession(s *GRPCServer, stream grpc.ServerStream, serverName string, remoteAddr net.Addr, incomingMetaData metadata.MD) *Session {
+	return &Session{
+		grpcServer:       s,
+		stream:           stream,
+		SSLServerName:    serverName,
+		remoteAddr:       remoteAddr,
+		incomingMetaData: incomingMetaData,
+		logger:           s.loggerFactory(fmt.Sprintf("Session %s", remoteAddr)),
+	}
+}
+
+func (s *Session) IsTCPSession() bool {
+	return s.tcpServer != nil
+}
+
+func (s *Session) IsGRPCSession() bool {
+	return s.grpcServer != nil
+}
 
 func (s *Session) IsProxied() bool {
 	return s.proxiedConnection
@@ -51,6 +87,10 @@ func (s *Session) Logf(level slogger.Level, messageFmt string, args ...interface
 	return s.logger.Logf(level, messageFmt, args...)
 }
 
+func (s *Session) RemoteAddr() net.Addr {
+	return s.remoteAddr
+}
+
 func (s *Session) SetRemoteAddr(v net.Addr) {
 	s.remoteAddr = v
 }
@@ -59,13 +99,56 @@ func (s *Session) SetPrivateEndpointId(id string) {
 	s.privateEndpointInfo.privateEndpointId = id
 }
 
-func (s *Session) ReadMessage() (Message, error) {
-	return ReadMessage(s.conn)
+func (s *Session) IsSticky() bool {
+	return s.sticky
 }
 
-func (s *Session) Run(conn net.Conn) {
+func (s *Session) SetSticky(sticky bool) {
+	s.sticky = sticky
+}
+
+func (s *Session) IncomingMetaData() metadata.MD {
+	return s.incomingMetaData
+}
+
+func (s *Session) SendMessage(m Message) error {
+	if s.IsTCPSession() {
+		return SendMessage(m, s.conn)
+	} else {
+		if s.IsSticky() {
+			trailer := metadata.New(map[string]string{
+				"Sticky": "true",
+			})
+			s.Logf(slogger.DEBUG, "Setting trailer %v", trailer)
+			s.stream.SetTrailer(trailer)
+		}
+		mBytes := m.Serialize()
+		return s.stream.SendMsg(&mBytes)
+	}
+}
+
+func (s *Session) ReadMessage() (Message, error) {
+	if s.IsTCPSession() {
+		return ReadMessage(s.conn)
+	} else {
+		return ReadMessageFromStream(s.stream)
+	}
+}
+
+func ReadMessageFromStream(stream grpc.ServerStream) (Message, error) {
+	var in []byte
+	err := stream.RecvMsg(&in)
+	if err != nil {
+		return nil, err
+	}
+
+	return ReadMessageFromBytes(in)
+}
+
+// Run executes a TCPSession with a net.Conn
+func (s *Session) RunWithConn(conn net.Conn) {
 	var err error
-	s.conn = s.server.workerFactory.GetConnection(conn)
+	s.conn = conn
 
 	var worker ServerWorker
 	defer func() {
@@ -76,8 +159,8 @@ func (s *Session) Run(conn net.Conn) {
 
 		// server has sessions that will receive from the sessionCtx.Done() channel
 		// decrement the session wait group
-		if _, ok := s.server.contextualWorkerFactory(); ok {
-			s.server.sessionManager.sessionWG.Done()
+		if _, ok := s.tcpServer.contextualWorkerFactory(); ok {
+			s.tcpServer.sessionManager.sessionWG.Done()
 		}
 	}()
 
@@ -91,10 +174,10 @@ func (s *Session) Run(conn net.Conn) {
 
 	defer s.logger.Logf(slogger.INFO, "socket closed")
 
-	if cwf, ok := s.server.contextualWorkerFactory(); ok {
-		worker, err = cwf.CreateWorkerWithContext(s, s.server.sessionManager.ctx)
+	if cwf, ok := s.tcpServer.contextualWorkerFactory(); ok {
+		worker, err = cwf.CreateWorkerWithContext(s, s.tcpServer.sessionManager.ctx)
 	} else {
-		worker, err = s.server.workerFactory.CreateWorker(s)
+		worker, err = s.tcpServer.workerFactory.CreateWorker(s)
 	}
 
 	if err != nil {
@@ -102,7 +185,41 @@ func (s *Session) Run(conn net.Conn) {
 		return
 	}
 
-	worker.DoLoopTemp()
+	worker.DoLoopTemp(nil)
+}
+
+// Run executes a GRPCSession with a grpc.ServerStream
+func (s *Session) RunWithStream(worker ServerWorker, m Message) error {
+	worker.DoLoopTemp(m)
+	if !s.IsSticky() {
+		s.logger.Logf(slogger.DEBUG, "Closing current worker session")
+		worker.Close()
+	}
+	return nil
+}
+
+// UnpinByTransaction should be called by user code to unpin a pinned session for transactions
+func (s *Session) UnpinByTransaction(lsid bson.D, txnNumber int64) {
+	if !s.IsGRPCSession() {
+		return
+	}
+	found := s.grpcServer.UnpinSessionByTransaction(s.SSLServerName, lsid, txnNumber)
+	if found {
+		s.Logf(slogger.DEBUG, "Unpinned session by transaction %v/%v", lsid, txnNumber)
+		s.SetSticky(false)
+	}
+}
+
+// UnpinByCursorId should be called by user code to unpin a pinned session for cursors
+func (s *Session) UnpinByCursorId(cursorId int64) {
+	if !s.IsGRPCSession() {
+		return
+	}
+	found := s.grpcServer.UnpinSessionByCursorId(s.SSLServerName, cursorId)
+	if found {
+		s.Logf(slogger.DEBUG, "Unpinned session by cursorId %v", cursorId)
+		s.SetSticky(false)
+	}
 }
 
 func (s *Session) RespondToCommandMakeBSON(clientMessage Message, args ...interface{}) error {
@@ -152,7 +269,7 @@ func (s *Session) RespondToCommand(clientMessage Message, doc SimpleBSON) error 
 			1, // NumberReturned
 			[]SimpleBSON{doc},
 		}
-		return SendMessage(rm, s.conn)
+		return s.SendMessage(rm)
 
 	case OP_INSERT, OP_UPDATE, OP_DELETE:
 		// For MongoDB 2.6+, and wpv 3+, these are only used for unacknowledged writes, so do nothing
@@ -169,7 +286,7 @@ func (s *Session) RespondToCommand(clientMessage Message, doc SimpleBSON) error 
 			SimpleBSONEmpty(),
 			[]SimpleBSON{},
 		}
-		return SendMessage(rm, s.conn)
+		return s.SendMessage(rm)
 
 	case OP_MSG:
 		rm := &MessageMessage{
@@ -185,7 +302,7 @@ func (s *Session) RespondToCommand(clientMessage Message, doc SimpleBSON) error 
 				},
 			},
 		}
-		return SendMessage(rm, s.conn)
+		return s.SendMessage(rm)
 
 	case OP_GET_MORE:
 		return errors.New("Internal error.  Should not be passing a GET_MORE message here.")
@@ -197,7 +314,7 @@ func (s *Session) RespondToCommand(clientMessage Message, doc SimpleBSON) error 
 }
 
 func (s *Session) RespondWithError(clientMessage Message, err error) error {
-	s.logger.Logf(slogger.INFO, "RespondWithError %v", err)
+	s.Logf(slogger.INFO, "RespondWithError %v", err)
 	var errBSON bson.D
 	if err == nil {
 		errBSON = bson.D{{"ok", 1}}
@@ -230,7 +347,7 @@ func (s *Session) RespondWithError(clientMessage Message, err error) error {
 			1, // NumberReturned
 			[]SimpleBSON{doc},
 		}
-		return SendMessage(rm, s.conn)
+		return s.SendMessage(rm)
 
 	case OP_INSERT, OP_UPDATE, OP_DELETE:
 		// For MongoDB 2.6+, and wpv 3+, these are only used for unacknowledged writes, so do nothing
@@ -247,7 +364,7 @@ func (s *Session) RespondWithError(clientMessage Message, err error) error {
 			SimpleBSONEmpty(),
 			[]SimpleBSON{},
 		}
-		return SendMessage(rm, s.conn)
+		return s.SendMessage(rm)
 
 	case OP_MSG:
 		rm := &MessageMessage{
@@ -263,10 +380,9 @@ func (s *Session) RespondWithError(clientMessage Message, err error) error {
 				},
 			},
 		}
-		return SendMessage(rm, s.conn)
+		return s.SendMessage(rm)
 
 	default:
 		return ErrUnknownOpcode
 	}
-
 }

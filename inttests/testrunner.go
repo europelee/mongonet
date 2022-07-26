@@ -240,7 +240,7 @@ func RunIntTest(mode util.MongoConnectionMode, maxPoolSize, workers int, targetA
 	}
 	go proxy.Run()
 
-	if err := testFunc(Iterations, mongoPort, proxyPort, hostToUse, proxy.NewLogger("tester"), workers, targetAvgLatencyMs, targetMaxLatencyMs, mode, util.GetTestClient, util.GetTestClient); err != nil {
+	if err := testFunc(Iterations, mongoPort, proxyPort, hostToUse, NewLogger("tester", pc.LogLevel, pc.Appenders), workers, targetAvgLatencyMs, targetMaxLatencyMs, mode, util.GetTestClient, util.GetTestClient); err != nil {
 		t.Fatal(err)
 	}
 }

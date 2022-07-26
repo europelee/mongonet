@@ -13,6 +13,31 @@ import (
 
 // ---
 
+func MergeErrors(errors ...error) error {
+	n, laste := 0, error(nil)
+
+	for _, e := range errors {
+		if e != nil {
+			n++
+			laste = e
+		}
+	}
+	switch n {
+	case 0:
+		return nil
+	case 1:
+		return laste
+	default:
+		s := make([]string, 0, n)
+		for _, e := range errors {
+			if e != error(nil) {
+				s = append(s, e.Error())
+			}
+		}
+		return fmt.Errorf("Multiple errors: %v", strings.Join(s, "; "))
+	}
+}
+
 type ProxyRetryError struct {
 	MsgToRetry     Message
 	PreviousResult SimpleBSON

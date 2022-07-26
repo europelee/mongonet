@@ -42,35 +42,36 @@ func (myi *MyInterceptor) InterceptClientToMongo(m mongonet.Message, previousRes
 	mongonet.ResponseInterceptor,
 	string,
 	address.Address,
+	*mongonet.PinnedTransactionSession,
 	string,
 	error,
 ) {
 	switch mm := m.(type) {
 	case *mongonet.QueryMessage:
 		if !mongonet.NamespaceIsCommand(mm.Namespace) {
-			return m, nil, "", "", "", nil
+			return m, nil, "", "", nil, "", nil
 		}
 
 		query, err := mm.Query.ToBSOND()
 		if err != nil || len(query) == 0 {
 			// let mongod handle error message
-			return m, nil, "", "", "", nil
+			return m, nil, "", "", nil, "", nil
 		}
 
 		cmdName := query[0].Key
 		if cmdName != "sni" {
-			return m, nil, "", "", "", nil
+			return m, nil, "", "", nil, "", nil
 		}
 
-		return nil, nil, "", "", "", newSNIError(myi.ps.RespondToCommand(mm, myi.sniResponse()))
+		return nil, nil, "", "", nil, "", newSNIError(myi.ps.RespondToCommand(mm, myi.sniResponse()))
 	case *mongonet.CommandMessage:
 		if mm.CmdName != "sni" {
-			return mm, nil, "", "", "", nil
+			return mm, nil, "", "", nil, "", nil
 		}
-		return nil, nil, "", "", "", newSNIError(myi.ps.RespondToCommand(mm, myi.sniResponse()))
+		return nil, nil, "", "", nil, "", newSNIError(myi.ps.RespondToCommand(mm, myi.sniResponse()))
 	}
 
-	return m, nil, "", "", "", nil
+	return m, nil, "", "", nil, "", nil
 }
 
 func (myi *MyInterceptor) Close() {
@@ -99,13 +100,13 @@ func main() {
 
 	pc := mongonet.NewProxyConfig(*bindHost, *bindPort, "", *mongoHost, *mongoPort, "", "", "sni_tester", false, util.Direct, 5, mongonet.DefaultMaxPoolSize, mongonet.DefaultMaxPoolIdleTimeSec, mongonet.DefaultConnectionPoolHeartbeatIntervalMs)
 
-	pc.UseSSL = true
+	pc.TCPServerConfig.UseSSL = true
 	if len(flag.Args()) < 2 {
 		fmt.Printf("need to specify ssl cert and key\n")
 		os.Exit(-1)
 	}
 
-	pc.SSLKeys = []mongonet.SSLPair{
+	pc.TCPServerConfig.SSLKeys = []mongonet.SSLPair{
 		{flag.Arg(0), flag.Arg(1), "fallback"},
 	}
 

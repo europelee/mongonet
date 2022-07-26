@@ -24,8 +24,11 @@ import (
 	"github.com/mongodb/mongonet"
 	"github.com/mongodb/slogger/v2/slogger"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 type BaseServerSession struct {
@@ -57,7 +60,6 @@ func (mss *BaseServerSession) handleEndSessions(mm mongonet.Message) error {
 }
 
 func (mss *BaseServerSession) handleMessage(m mongonet.Message) (error, bool) {
-
 	switch mm := m.(type) {
 	case *mongonet.QueryMessage:
 
@@ -76,6 +78,7 @@ func (mss *BaseServerSession) handleMessage(m mongonet.Message) (error, bool) {
 
 		db := mongonet.NamespaceToDB(mm.Namespace)
 		cmdName := cmd[0].Key
+
 		switch strings.ToLower(cmdName) {
 		case "getnonce":
 			return mss.session.RespondToCommandMakeBSON(mm, "nonce", "914653afbdbdb833"), false
@@ -197,19 +200,18 @@ type MyServerSession struct {
 	*BaseServerSession
 }
 
-/*
-* @return (error, <fatal>)
- */
-
-func (mss *MyServerSession) DoLoopTemp() {
+func (mss *MyServerSession) DoLoopTemp(m mongonet.Message) {
 	for {
-		m, err := mss.session.ReadMessage()
-		if err != nil {
-			if err == io.EOF {
+		if m == nil {
+			var err error
+			m, err = mss.session.ReadMessage()
+			if err != nil {
+				if err == io.EOF {
+					return
+				}
+				mss.session.Logf(slogger.WARN, "error reading message: %s", err)
 				return
 			}
-			mss.session.Logf(slogger.WARN, "error reading message: %s", err)
-			return
 		}
 		err, fatal := mss.handleMessage(m)
 		if err == nil && fatal {
@@ -225,6 +227,7 @@ func (mss *MyServerSession) DoLoopTemp() {
 				return
 			}
 		}
+		m = nil
 	}
 }
 
@@ -232,21 +235,23 @@ func (mss *MyServerSession) Close() {
 }
 
 type MyServerTestFactory struct {
+	mydata map[string][]bson.D
 }
 
 func (sf *MyServerTestFactory) CreateWorker(session *mongonet.Session) (mongonet.ServerWorker, error) {
-	return &MyServerSession{&BaseServerSession{session, map[string][]bson.D{}}}, nil
+	return &MyServerSession{&BaseServerSession{session, sf.mydata}}, nil
 }
 
 func (sf *MyServerTestFactory) GetConnection(conn net.Conn) io.ReadWriteCloser {
 	return conn
 }
 
-func TestServer(t *testing.T) {
-	port := 9919 // TODO: pick randomly or check?
+func TestTCPServer(t *testing.T) {
+	port := 9919
 	syncTlsConfig := mongonet.NewSyncTlsConfig()
-	server := mongonet.NewServer(
-		mongonet.ServerConfig{
+	server := mongonet.NewTCPServer(
+		mongonet.TCPServerConfig{
+			true,
 			"127.0.0.1",
 			port,
 			false,
@@ -255,10 +260,11 @@ func TestServer(t *testing.T) {
 			0,
 			0,
 			nil,
-			slogger.DEBUG,
-			[]slogger.Appender{slogger.StdOutAppender()},
 		},
-		&MyServerTestFactory{},
+		&MyServerTestFactory{mydata: map[string][]bson.D{}},
+		func(prefix string) *slogger.Logger {
+			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
+		},
 	)
 
 	go server.Run()
@@ -299,16 +305,16 @@ func TestServer(t *testing.T) {
 		t.Errorf("docs don't match: %v", diff)
 		return
 	}
-
 }
 
-func TestServerWorkerWithContext(t *testing.T) {
+func TestTCPServerWorkerWithContext(t *testing.T) {
 	port := 9921
 
 	var sessCtr int32
 	syncTlsConfig := mongonet.NewSyncTlsConfig()
-	server := mongonet.NewServer(
-		mongonet.ServerConfig{
+	server := mongonet.NewTCPServer(
+		mongonet.TCPServerConfig{
+			true,
 			"127.0.0.1",
 			port,
 			false,
@@ -317,10 +323,11 @@ func TestServerWorkerWithContext(t *testing.T) {
 			0,
 			0,
 			nil,
-			slogger.DEBUG,
-			[]slogger.Appender{slogger.StdOutAppender()},
 		},
 		&TestFactoryWithContext{&sessCtr},
+		func(prefix string) *slogger.Logger {
+			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
+		},
 	)
 
 	go server.Run()
@@ -349,6 +356,245 @@ func TestServerWorkerWithContext(t *testing.T) {
 	}
 }
 
+func TestGRPCServer(t *testing.T) {
+	port := 9920
+	server := mongonet.NewGRPCServer(
+		mongonet.GRPCServerConfig{
+			true,
+			"127.0.0.1",
+			port,
+		},
+		&MyServerTestFactory{mydata: map[string][]bson.D{}},
+		func(prefix string) *slogger.Logger {
+			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
+		},
+	)
+
+	go server.Run()
+
+	// Set up a connection to the server.
+	goctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+	grpcHostPort := fmt.Sprintf("%v:%v", "127.0.0.1", port)
+	conn, err := grpc.DialContext(goctx, grpcHostPort, grpc.WithInsecure(), grpc.WithBlock())
+	if err != nil {
+		t.Error(err)
+	}
+	defer conn.Close()
+
+	time.Sleep(time.Second * 5)
+
+	// Test operations
+	insert := bson.D{
+		{"insert", "foo"},
+		{"$db", "test"},
+		{"documents", bson.A{
+			bson.D{{"_id", 0}},
+		}},
+	}
+	err = sendAndRecvMsg(t, conn, insert, 0)
+	if err != nil {
+		t.Error(err)
+	}
+
+	find := bson.D{
+		{"find", "foo"},
+		{"$db", "test"},
+		{"filter", bson.D{}},
+	}
+	err = sendAndRecvMsg(t, conn, find, 0)
+	if err != nil {
+		t.Error(err)
+	}
+
+	// Shutdown
+	server.GracefulStop()
+}
+
+func TestGRPCServerTransactionNotFound(t *testing.T) {
+	port := 9920
+	server := mongonet.NewGRPCServer(
+		mongonet.GRPCServerConfig{
+			true,
+			"127.0.0.1",
+			port,
+		},
+		&MyServerTestFactory{mydata: map[string][]bson.D{}},
+		func(prefix string) *slogger.Logger {
+			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
+		},
+	)
+
+	go server.Run()
+
+	// Set up a connection to the server.
+	goctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+	grpcHostPort := fmt.Sprintf("%v:%v", "127.0.0.1", port)
+	conn, err := grpc.DialContext(goctx, grpcHostPort, grpc.WithInsecure(), grpc.WithBlock())
+	if err != nil {
+		t.Error(err)
+	}
+	defer conn.Close()
+
+	// Test transaction not found
+	id := primitive.Binary{
+		Subtype: uint8(4),
+		Data:    []byte("blahblahblahblah"),
+	}
+	insert := bson.D{
+		{"insert", "foo"},
+		{"$db", "test"},
+		{"autocommit", false},
+		{"txnNumber", int64(1)},
+		{"lsid", bson.D{
+			{"id", id},
+		}},
+		{"documents", bson.A{
+			bson.D{{"_id", int64(0)}},
+		}},
+	}
+	err = sendAndRecvMsg(t, conn, insert, mongonet.TransactionNotFoundErrorCode)
+	if err != nil {
+		t.Error(err)
+	}
+
+	// Shutdown
+	server.GracefulStop()
+}
+
+func TestGRPCServerCursorIdNotFound(t *testing.T) {
+	port := 9920
+	server := mongonet.NewGRPCServer(
+		mongonet.GRPCServerConfig{
+			true,
+			"127.0.0.1",
+			port,
+		},
+		&MyServerTestFactory{mydata: map[string][]bson.D{}},
+		func(prefix string) *slogger.Logger {
+			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
+		},
+	)
+
+	go server.Run()
+
+	// Set up a connection to the server.
+	goctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+	grpcHostPort := fmt.Sprintf("%v:%v", "127.0.0.1", port)
+	conn, err := grpc.DialContext(goctx, grpcHostPort, grpc.WithInsecure(), grpc.WithBlock())
+	if err != nil {
+		t.Error(err)
+	}
+	defer conn.Close()
+
+	// Test cursorId found
+	find := bson.D{
+		{"find", "foo"},
+		{"$db", "test"},
+		{"cursor", bson.D{{"id", int64(42)}}},
+		{"filter", bson.D{}},
+	}
+	err = sendAndRecvMsg(t, conn, find, mongonet.CursorNotFoundErrorCode)
+	if err != nil {
+		t.Error(err)
+	}
+
+	// Shutdown
+	server.GracefulStop()
+}
+
+func sendAndRecvMsg(t *testing.T, conn *grpc.ClientConn, bson bson.D, expectedErrorCode int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	ctx = metadata.AppendToOutgoingContext(ctx, "ServerName", "TestServerName")
+	stream, err := conn.NewStream(ctx, &grpc.StreamDesc{
+		StreamName:    "Send",
+		ServerStreams: true,
+	}, "/mongonet/Send", grpc.ForceCodec(mongonet.BytesCodec{}))
+	if err != nil {
+		return err
+	}
+
+	t.Logf("Sending gRPC msg: %v", bson)
+	doc, err := mongonet.SimpleBSONConvert(bson)
+	if err != nil {
+		return err
+	}
+	cmd := &mongonet.MessageMessage{
+		mongonet.MessageHeader{
+			0,
+			17,
+			0,
+			mongonet.OP_MSG},
+		0,
+		[]mongonet.MessageMessageSection{
+			&mongonet.BodySection{
+				doc,
+			},
+		},
+	}
+
+	// send
+	in := cmd.Serialize()
+	if err := stream.SendMsg(&in); err != nil {
+		return err
+	}
+	if err := stream.CloseSend(); err != nil {
+		return err
+	}
+
+	// receive
+	var out []byte
+	if err = stream.RecvMsg(&out); err != nil {
+		return err
+	}
+	t.Logf("RecvMsg read")
+	m, err := mongonet.ReadMessageFromBytes(out)
+	if err != nil {
+		return err
+	}
+	mm, ok := m.(*mongonet.MessageMessage)
+	if !ok {
+		return fmt.Errorf("Unable to convert to MessageMessage")
+	}
+	msg, _, err := mongonet.MessageMessageToBSOND(mm)
+	if err != nil {
+		return err
+	}
+	t.Logf("Received gRPC response: %v", msg)
+
+	// check response for { ok: 1 }
+	idx := mongonet.BSONIndexOf(msg, "ok")
+	if idx < 0 {
+		return fmt.Errorf("can't find ok in response")
+	}
+	ok, _, err = mongonet.GetAsBool(msg[idx])
+	if err != nil {
+		return err
+	}
+	if ok && expectedErrorCode != 0 {
+		return fmt.Errorf("Command expected to fail, but succeeded")
+	}
+	if !ok {
+		idx = mongonet.BSONIndexOf(msg, "code")
+		if idx > 0 {
+			code, _, err := mongonet.GetAsInt(msg[idx])
+			if err != nil {
+				return err
+			}
+			if code != expectedErrorCode {
+				return fmt.Errorf("Command did not return expected error %v != %v", code, expectedErrorCode)
+			}
+			return nil
+		}
+		return fmt.Errorf("Command did not return ok")
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Testing for server with contextualWorkerFactory
 
@@ -374,7 +620,7 @@ type TestSessionWithContext struct {
 	counter *int32
 }
 
-func (tsc *TestSessionWithContext) DoLoopTemp() {
+func (tsc *TestSessionWithContext) DoLoopTemp(m mongonet.Message) {
 	atomic.AddInt32(tsc.counter, 1)
 	ctx := tsc.ctx
 
@@ -547,7 +793,7 @@ func writeCertificatePairToDisk(certificate *x509.Certificate, privateKey interf
 }
 
 func TestServerWithTLS(t *testing.T) {
-	port := 9922 // TODO: pick randomly or check?
+	port := 9922
 	syncTlsConfig := mongonet.NewSyncTlsConfig()
 
 	// generate keys
@@ -563,8 +809,9 @@ func TestServerWithTLS(t *testing.T) {
 		Id:   "default",
 	}}
 
-	server := mongonet.NewServer(
-		mongonet.ServerConfig{
+	server := mongonet.NewTCPServer(
+		mongonet.TCPServerConfig{
+			true,
 			hostname,
 			port,
 			true,
@@ -573,10 +820,11 @@ func TestServerWithTLS(t *testing.T) {
 			0,
 			0,
 			nil,
-			slogger.DEBUG,
-			[]slogger.Appender{slogger.StdOutAppender()},
 		},
-		&MyServerTestFactory{},
+		&MyServerTestFactory{mydata: map[string][]bson.D{}},
+		func(prefix string) *slogger.Logger {
+			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
+		},
 	)
 
 	ok, _, errs := syncTlsConfig.SetTlsConfig(nil, nil, tls.VersionTLS12, sslPair)

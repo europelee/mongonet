@@ -47,10 +47,19 @@ type MetricsHookFactory interface {
 }
 
 type ResponseInterceptor interface {
-	InterceptMongoToClient(m Message, serverAddress address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, error)
+	InterceptMongoToClient(m Message, serverAddress address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, int64, error)
 	// ProcessExecutionTime records the execution time of an operation from startTime, subtracting
 	// time while execution was paused, pausedExecutionTimeMicros (i.e. while sending the message back to client)
 	ProcessExecutionTime(startTime time.Time, pausedExecutionTimeMicros int64)
+}
+
+type PinnedTransactionSession struct {
+	lsid      bson.D
+	txnNumber int64
+}
+
+func NewPinnedTransactionSession(lsid bson.D, txnNumber int64) *PinnedTransactionSession {
+	return &PinnedTransactionSession{lsid, txnNumber}
 }
 
 type ProxyInterceptor interface {
@@ -59,6 +68,7 @@ type ProxyInterceptor interface {
 		ri ResponseInterceptor,
 		remoteRs string,
 		pinnedAddress address.Address,
+		pinnedTransactionSession *PinnedTransactionSession,
 		metricOperationType string,
 		err error,
 	)
@@ -85,7 +95,15 @@ func (ps *ProxySession) GetLogger() *slogger.Logger {
 }
 
 func (ps *ProxySession) ServerPort() int {
-	return ps.proxy.Config.BindPort
+	if ps.IsTCPSession() {
+		return ps.proxy.Config.TCPServerConfig.BindPort
+	}
+
+	if ps.IsGRPCSession() {
+		return ps.proxy.Config.GRPCServerConfig.BindPort
+	}
+
+	return 0
 }
 
 func (ps *ProxySession) Stats() bson.D {
@@ -97,7 +115,7 @@ func (ps *ProxySession) Stats() bson.D {
 	}
 }
 
-func (ps *ProxySession) DoLoopTemp() {
+func (ps *ProxySession) DoLoopTemp(m Message) {
 	defer logPanic(ps.logger)
 	var err error
 	var retryError *ProxyRetryError
@@ -107,7 +125,8 @@ func (ps *ProxySession) DoLoopTemp() {
 		if retryError != nil {
 			retryOnRs = retryError.RetryOnRs
 		}
-		ps.mongoConn, err = ps.doLoop(ps.mongoConn, retryError, retryOnRs)
+		ps.mongoConn, err = ps.doLoop(m, ps.mongoConn, retryError, retryOnRs)
+		m = nil
 		if err != nil {
 			if ps.mongoConn != nil {
 				ps.mongoConn.Close(ps)
@@ -123,77 +142,6 @@ func (ps *ProxySession) DoLoopTemp() {
 			return
 		}
 		retryError = nil
-	}
-}
-
-func (ps *ProxySession) respondWithError(clientMessage Message, err error) error {
-	ps.logger.Logf(slogger.INFO, "respondWithError %v", err)
-
-	var errBSON bson.D
-	if err == nil {
-		errBSON = bson.D{{"ok", 1}}
-	} else if mongoErr, ok := err.(MongoError); ok {
-		errBSON = mongoErr.ToBSON()
-	} else {
-		errBSON = bson.D{{"ok", 0}, {"errmsg", err.Error()}}
-	}
-
-	doc, myErr := SimpleBSONConvert(errBSON)
-	if myErr != nil {
-		return myErr
-	}
-
-	switch clientMessage.Header().OpCode {
-	case OP_QUERY, OP_GET_MORE:
-		rm := &ReplyMessage{
-			MessageHeader{
-				0,
-				17, // TODO
-				clientMessage.Header().RequestID,
-				OP_REPLY},
-
-			// We should not set the error bit because we are
-			// responding with errmsg instead of $err
-			0, // flags - error bit
-
-			0, // cursor id
-			0, // StartingFrom
-			1, // NumberReturned
-			[]SimpleBSON{doc},
-		}
-		return SendMessage(rm, ps.conn)
-
-	case OP_COMMAND:
-		rm := &CommandReplyMessage{
-			MessageHeader{
-				0,
-				17, // TODO
-				clientMessage.Header().RequestID,
-				OP_COMMAND_REPLY},
-			doc,
-			SimpleBSONEmpty(),
-			[]SimpleBSON{},
-		}
-		return SendMessage(rm, ps.conn)
-
-	case OP_MSG:
-		rm := &MessageMessage{
-			MessageHeader{
-				0,
-				17, // TODO
-				clientMessage.Header().RequestID,
-				OP_MSG},
-			0,
-			[]MessageMessageSection{
-				&BodySection{
-					doc,
-				},
-			},
-		}
-		return SendMessage(rm, ps.conn)
-
-	default:
-		panic(fmt.Sprintf("unsupported opcode %v", clientMessage.Header().OpCode))
 	}
 }
 
@@ -317,7 +265,7 @@ func wrapNetworkError(err error) error {
 	return driver.Error{Message: err.Error(), Labels: labels, Wrapped: err}
 }
 
-func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *ProxyRetryError, remoteRs string) (*MongoConnectionWrapper, error) {
+func (ps *ProxySession) doLoop(m Message, mongoConn *MongoConnectionWrapper, retryError *ProxyRetryError, remoteRs string) (*MongoConnectionWrapper, error) {
 	var requestDurationHook, responseDurationHook, totalDurationHook, requestErrorsHook, responseErrorsHook, dbRoundTripHook, percentageTimeSpentInProxy MetricsHook
 
 	if ps.isMetricsEnabled {
@@ -354,11 +302,12 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 
 	// reading message from client
 	var err error
-	var m Message
 	var previousRes SimpleBSON
-	if retryError == nil {
+	if m != nil {
+		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "using cached message from client")
+	} else if retryError == nil {
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "reading message from client")
-		m, err = ReadMessage(ps.conn)
+		m, err = ps.ReadMessage()
 		if err != nil {
 			ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "reading message from client fail %v", err)
 			if ps.isMetricsEnabled {
@@ -409,17 +358,19 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 	ps.logMessageTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, m)
 	var respInter ResponseInterceptor
 	var pinnedAddress address.Address
+	var pinnedTransactionSession *PinnedTransactionSession
 
 	metricOperationType := "Unknown"
 	pausedExecutionTimeMicros := int64(0)
 	if ps.interceptor != nil {
 		ps.interceptor.TrackRequest(m.Header())
-		m, respInter, remoteRs, pinnedAddress, metricOperationType, err = ps.interceptor.InterceptClientToMongo(m, previousRes)
+		m, respInter, remoteRs, pinnedAddress, pinnedTransactionSession, metricOperationType, err = ps.interceptor.InterceptClientToMongo(m, previousRes)
 		defer func() {
 			if respInter != nil {
 				respInter.ProcessExecutionTime(startServerSelection, pausedExecutionTimeMicros)
 			}
 		}()
+
 		if err != nil {
 			if m == nil {
 				if ps.isMetricsEnabled {
@@ -451,11 +402,17 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 			}
 			return mongoConn, nil
 		}
+		if ps.IsGRPCSession() && pinnedTransactionSession != nil && !ps.IsSticky() {
+			ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "pinning gRPC session for transaction = %v", pinnedTransactionSession)
+			ps.grpcServer.PinSessionByTransaction(ps, ps.SSLServerName, pinnedTransactionSession)
+			ps.SetSticky(true)
+		}
 		if m == nil {
 			// already responded
 			return mongoConn, nil
 		}
 	}
+
 	if retryError != nil && retryError.RetryOnRs != "" {
 		remoteRs = retryError.RetryOnRs
 	}
@@ -659,6 +616,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 				mongoConn.ep.ProcessError(err, mongoConn.conn)
 			}
 		}
+
 		retryAttemptsExhausted := false
 		if retryError != nil && errCode != 0 {
 			if retryError.RetryCount > 1 {
@@ -672,8 +630,10 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 				retryAttemptsExhausted = true
 			}
 		}
+		var cursorId int64
 		if respInter != nil {
-			resp, err = respInter.InterceptMongoToClient(resp, mongoConn.conn.Address(), remoteRs != "", retryAttemptsExhausted, metricOperationType)
+			resp, cursorId, err = respInter.InterceptMongoToClient(resp, mongoConn.conn.Address(), remoteRs != "", retryAttemptsExhausted, metricOperationType)
+
 			if err != nil {
 				if ps.isMetricsEnabled {
 					hookErr := responseErrorsHook.IncCounterGauge()
@@ -685,6 +645,10 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 					return nil, pre
 				}
 				return nil, NewStackErrorf("error intercepting message %v", err)
+			} else if ps.IsGRPCSession() && pinnedTransactionSession == nil && !ps.IsSticky() && cursorId > 0 {
+				ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "pinning gRPC session for cursorId = %v", cursorId)
+				ps.grpcServer.PinSessionByCursorId(ps, ps.SSLServerName, cursorId)
+				ps.SetSticky(true)
 			}
 		}
 
@@ -698,7 +662,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		// Send message back to user
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "sending back data to user from mongo conn id=%v remoteRs=%s", mongoConn.conn.ID(), remoteRs)
 		startPausedTimer := time.Now()
-		err = SendMessage(resp, ps.conn)
+		err = ps.SendMessage(resp)
 		pausedExecutionTimeMicros += time.Now().Sub(startPausedTimer).Microseconds()
 		if err != nil {
 			if ps.isMetricsEnabled {

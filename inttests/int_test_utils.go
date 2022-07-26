@@ -71,16 +71,18 @@ func (ff *FindFixer) ProcessExecutionTime(startTime time.Time, pausedExecutionTi
 	// no-op
 }
 
-func (ff *FindFixer) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, error) {
+func (ff *FindFixer) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, int64, error) {
 	switch mm := m.(type) {
 	case *MessageMessage:
 
 		doc, _, err := MessageMessageToBSOND(mm)
 		if err != nil {
-			return mm, NewStackErrorf("failed to get BSON.D from OP_MSG. err=%v", err)
+			return mm, 0, NewStackErrorf("failed to get BSON.D from OP_MSG. err=%v", err)
 		}
+		var cid int64
+		var ok bool
 		cidRaw := BSONGetValueByNestedPathForTests(doc, "cursor.id", 0)
-		if cid, ok := cidRaw.(int64); ok && cid > 0 {
+		if cid, ok = cidRaw.(int64); ok && cid > 0 {
 			ff.cm.Store(cid, address)
 		}
 		if ff.simulateRetry {
@@ -89,16 +91,16 @@ func (ff *FindFixer) InterceptMongoToClient(m Message, address address.Address, 
 				// trigger a retry error only if the server responds with a particular value
 				if v == util.RetryOnRemoteVal && !retryAttemptsExhausted {
 					// Retried once and succeeded, retryAttemptsExhausted -> false
-					return mm, NewProxyRetryError(ff.OriginalMessage, SimpleBSON{}, util.RemoteRsName)
+					return mm, 0, NewProxyRetryError(ff.OriginalMessage, SimpleBSON{}, util.RemoteRsName)
 				} else if v == util.RetryOnRemoteVal && retryAttemptsExhausted {
 					// We should not come back here after first retry.
 					panic("retryAttemptsExhausted should not be true after one successful retry")
 				}
 			}
 		}
-		return mm, nil
+		return mm, cid, nil
 	default:
-		return m, nil
+		return m, 0, nil
 	}
 }
 
@@ -113,13 +115,13 @@ func (ff *FindFixerForRetry) ProcessExecutionTime(startTime time.Time, pausedExe
 	// no-op
 }
 
-func (ff *FindFixerForRetry) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, error) {
+func (ff *FindFixerForRetry) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, int64, error) {
 	switch mm := m.(type) {
 	case *MessageMessage:
 
 		doc, _, err := MessageMessageToBSOND(mm)
 		if err != nil {
-			return mm, NewStackErrorf("failed to get BSON.D from OP_MSG. err=%v", err)
+			return mm, 0, NewStackErrorf("failed to get BSON.D from OP_MSG. err=%v", err)
 		}
 		if errCodeIdx := BSONIndexOf(doc, "code"); errCodeIdx != -1 {
 			errCode, _, _ := GetAsInt(doc[errCodeIdx])
@@ -134,7 +136,7 @@ func (ff *FindFixerForRetry) InterceptMongoToClient(m Message, address address.A
 				// Failpoint for 'find' is going to trigger 4 times in total (3 more times after this)
 				// We will retry this command 3 more times.
 				atomic.StoreInt32(&FindRetryState, FindRetryFirstError)
-				return mm, NewProxyRetryErrorWithRetryCount(ff.OriginalMessage, SimpleBSON{}, util.RemoteRsName, 3)
+				return mm, 0, NewProxyRetryErrorWithRetryCount(ff.OriginalMessage, SimpleBSON{}, util.RemoteRsName, 3)
 			} else if errCode == 11601 && retryAttemptsExhausted {
 				ff.ps.Logf(slogger.DEBUG, "Got 11601 Error and retry failed!")
 				currentState := atomic.LoadInt32(&FindRetryState)
@@ -144,7 +146,7 @@ func (ff *FindFixerForRetry) InterceptMongoToClient(m Message, address address.A
 				}
 				// Retries should be exhausted by now, we will retry one more time and it will succeed.
 				atomic.StoreInt32(&FindRetryState, FindRetryErrorAfterRetries)
-				return mm, NewProxyRetryError(ff.OriginalMessage, SimpleBSON{}, util.RemoteRsName) // Should succeed now
+				return mm, 0, NewProxyRetryError(ff.OriginalMessage, SimpleBSON{}, util.RemoteRsName) // Should succeed now
 			} else {
 				// We got an unknown error.
 				panic(fmt.Sprintf("Unknown error. Expected: %v, got: %v", 11601, errCode))
@@ -162,9 +164,9 @@ func (ff *FindFixerForRetry) InterceptMongoToClient(m Message, address address.A
 			panic(fmt.Sprintf("Retry logic test failed. Expected state: %v, current state: %v", FindRetryErrorAfterRetries, currentState))
 		}
 
-		return mm, nil
+		return mm, 0, nil
 	default:
-		return m, nil
+		return m, 0, nil
 	}
 }
 
@@ -236,14 +238,14 @@ func (mri *IsMasterFixer) ProcessExecutionTime(startTime time.Time, pausedExecut
 	// no-op
 }
 
-func (mri *IsMasterFixer) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, error) {
+func (mri *IsMasterFixer) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, int64, error) {
 	switch mm := m.(type) {
 	case *ReplyMessage:
 		var err error
 		var n SimpleBSON
 		doc, err := mm.Docs[0].ToBSOND()
 		if err != nil {
-			return mm, err
+			return mm, 0, err
 		}
 		if mri.mode == util.Cluster {
 			n, err = fixIsMasterCluster(doc)
@@ -252,10 +254,10 @@ func (mri *IsMasterFixer) InterceptMongoToClient(m Message, address address.Addr
 			n, err = fixIsMasterDirect(doc, mri.mongoPort, mri.proxyPort)
 		}
 		if err != nil {
-			return mm, err
+			return mm, 0, err
 		}
 		mm.Docs[0] = n
-		return mm, nil
+		return mm, 0, nil
 	case *MessageMessage:
 		var err error
 		var n SimpleBSON
@@ -263,21 +265,21 @@ func (mri *IsMasterFixer) InterceptMongoToClient(m Message, address address.Addr
 		for _, section := range mm.Sections {
 			if bs, ok := section.(*BodySection); ok {
 				if bodySection != nil {
-					return mm, NewStackErrorf("OP_MSG should not have more than one body section!  Second body section: %v", bs)
+					return mm, 0, NewStackErrorf("OP_MSG should not have more than one body section!  Second body section: %v", bs)
 				}
 				bodySection = bs
 			} else {
 				// MongoDB 3.6 does not support anything other than body sections in replies
-				return mm, NewStackErrorf("OP_MSG replies with sections other than a body section are not supported!")
+				return mm, 0, NewStackErrorf("OP_MSG replies with sections other than a body section are not supported!")
 			}
 		}
 
 		if bodySection == nil {
-			return mm, NewStackErrorf("OP_MSG should have a body section!")
+			return mm, 0, NewStackErrorf("OP_MSG should have a body section!")
 		}
 		doc, err := bodySection.Body.ToBSOND()
 		if err != nil {
-			return mm, err
+			return mm, 0, err
 		}
 		if mri.mode == util.Cluster {
 			n, err = fixIsMasterCluster(doc)
@@ -286,10 +288,25 @@ func (mri *IsMasterFixer) InterceptMongoToClient(m Message, address address.Addr
 			n, err = fixIsMasterDirect(doc, mri.mongoPort, mri.proxyPort)
 		}
 		bodySection.Body = n
-		return mm, nil
+		return mm, 0, nil
 	default:
-		return m, nil
+		return m, 0, nil
 	}
+}
+
+type EndTransactionFixer struct {
+	ps        *ProxySession
+	lsid      bson.D
+	txnNumber int64
+}
+
+func (etf *EndTransactionFixer) ProcessExecutionTime(startTime time.Time, pausedExecutionTimeMicros int64) {
+	// no-op
+}
+
+func (etf *EndTransactionFixer) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, int64, error) {
+	etf.ps.UnpinByTransaction(etf.lsid, etf.txnNumber)
+	return m, 0, nil
 }
 
 type MyInterceptor struct {
@@ -322,24 +339,25 @@ func (myi *MyInterceptor) InterceptClientToMongo(m Message, previousResult Simpl
 	ResponseInterceptor,
 	string,
 	address.Address,
+	*PinnedTransactionSession,
 	string,
 	error,
 ) {
 	switch mm := m.(type) {
 	case *QueryMessage:
 		if !NamespaceIsCommand(mm.Namespace) {
-			return m, nil, "", "", "", nil
+			return m, nil, "", "", nil, "", nil
 		}
 
 		query, err := mm.Query.ToBSOND()
 		if err != nil || len(query) == 0 {
 			// let mongod handle error message
-			return m, nil, "", "", "", nil
+			return m, nil, "", "", nil, "", nil
 		}
 
 		cmdName := strings.ToLower(query[0].Key)
 		if cmdName != "ismaster" {
-			return m, nil, "", "", "", nil
+			return m, nil, "", "", nil, "", nil
 		}
 		// remove client
 		if idx := BSONIndexOf(query, "client"); idx >= 0 {
@@ -358,7 +376,7 @@ func (myi *MyInterceptor) InterceptClientToMongo(m Message, previousResult Simpl
 			panic(err)
 		}
 		mm.Query = qb
-		return mm, &IsMasterFixer{myi.mode, myi.mongoPort, myi.proxyPort}, "", "", "", nil
+		return mm, &IsMasterFixer{myi.mode, myi.mongoPort, myi.proxyPort}, "", "", nil, "", nil
 	case *MessageMessage:
 		doc, bodySection, err := MessageMessageToBSOND(mm)
 		if err != nil {
@@ -379,6 +397,25 @@ func (myi *MyInterceptor) InterceptClientToMongo(m Message, previousResult Simpl
 
 		cmd := strings.ToLower(doc[0].Key)
 
+		var lsid bson.D
+		var txnNumber int
+		var pinnedTransactionSession *PinnedTransactionSession
+		if idx := BSONIndexOf(doc, "lsid"); idx >= 0 {
+			lsid, _, err = GetAsBSON(doc[idx])
+			if err != nil {
+				panic(err)
+			}
+			if idx := BSONIndexOf(doc, "txnNumber"); idx >= 0 {
+				txnNumber, _, err = GetAsInt(doc[idx])
+				if err != nil {
+					panic(err)
+				}
+				if BSONIndexOf(doc, "startTransaction") >= 0 {
+					pinnedTransactionSession = NewPinnedTransactionSession(lsid, int64(txnNumber))
+				}
+			}
+		}
+
 		if myi.blockCommands != nil {
 			blockTime, ok := myi.blockCommands[cmd]
 			if ok {
@@ -390,7 +427,7 @@ func (myi *MyInterceptor) InterceptClientToMongo(m Message, previousResult Simpl
 		case "ismaster":
 			// streaming isMaster is enabled. no need to fix
 			if !myi.disableStreamingIsMaster {
-				return mm, nil, rsName, "", "", nil
+				return mm, nil, rsName, "", pinnedTransactionSession, "", nil
 			}
 			// fixing isMaster request when streamingIsMaster is disabled
 			if idx := BSONIndexOf(doc, "maxAwaitTimeMS"); idx >= 0 {
@@ -404,31 +441,33 @@ func (myi *MyInterceptor) InterceptClientToMongo(m Message, previousResult Simpl
 				panic(err)
 			}
 			bodySection.Body = n
-			return mm, &IsMasterFixer{myi.mode, myi.mongoPort, myi.proxyPort}, rsName, "", "", nil
+			return mm, &IsMasterFixer{myi.mode, myi.mongoPort, myi.proxyPort}, rsName, "", pinnedTransactionSession, "", nil
 		case "find":
 			if db == util.RetryOnRemoteDbNameForTests {
-				return mm, &FindFixer{mm, true, myi.cursorManager, myi.ps}, "", "", "", nil
+				return mm, &FindFixer{mm, true, myi.cursorManager, myi.ps}, "", "", pinnedTransactionSession, "", nil
 			} else if db == util.RetryOnRemoteDbMultiple {
-				return mm, &FindFixerForRetry{mm, true, myi.cursorManager, myi.ps}, "", "", "", nil
+				return mm, &FindFixerForRetry{mm, true, myi.cursorManager, myi.ps}, "", "", pinnedTransactionSession, "", nil
 			}
-			return mm, &FindFixer{mm, false, myi.cursorManager, myi.ps}, rsName, "", "", nil
+			return mm, &FindFixer{mm, false, myi.cursorManager, myi.ps}, rsName, "", pinnedTransactionSession, "", nil
 		case "getmore":
 			cid, ok := doc[0].Value.(int64)
 			if !ok {
 				panic(fmt.Sprintf("got %T for cursor id but expected int64", cid))
 			}
 			addr, _ := myi.cursorManager.Load(cid)
-			return mm, nil, rsName, addr, "", nil
+			return mm, nil, rsName, addr, pinnedTransactionSession, "", nil
+		case "committransaction":
+			return mm, &EndTransactionFixer{myi.ps, lsid, int64(txnNumber)}, rsName, "", pinnedTransactionSession, "", nil
 		case "mongonetisconnectionproxied":
 			// test command
-			return nil, nil, "", "", "", myi.ps.RespondToCommandMakeBSON(mm, "proxied", myi.ps.IsProxied())
+			return nil, nil, "", "", nil, "", myi.ps.RespondToCommandMakeBSON(mm, "proxied", myi.ps.IsProxied())
 
 		default:
-			return mm, nil, rsName, "", "", nil
+			return mm, nil, rsName, "", pinnedTransactionSession, "", nil
 		}
 	}
 
-	return m, nil, "", "", "", nil
+	return m, nil, "", "", nil, "", nil
 }
 
 const charset = "abcdefghijklmnopqrstuvwxyz" +

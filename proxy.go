@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io"
 	"net"
 	"reflect"
 	"sync"
@@ -24,7 +23,9 @@ import (
 
 type Proxy struct {
 	Config ProxyConfig
-	server *Server
+
+	tcpServer  *TCPServer
+	gRPCServer *GRPCServer
 
 	logger          *slogger.Logger
 	MongoClient     *mongo.Client
@@ -70,7 +71,7 @@ func NewProxy(pc ProxyConfig) (*Proxy, error) {
 func NewProxyWithContext(pc ProxyConfig, ctx context.Context) (*Proxy, error) {
 	var initCount, initPoolCleared int64 = 0, 0
 	defaultReadPref := readpref.Primary()
-	p := &Proxy{pc, nil, nil, nil, nil, defaultReadPref, ctx, &initCount, &initPoolCleared, &sync.Map{}}
+	p := &Proxy{pc, nil, nil, nil, nil, nil, defaultReadPref, ctx, &initCount, &initPoolCleared, &sync.Map{}}
 	mongoClient, err := getMongoClientFromProxyConfig(p, pc, ctx)
 	if err != nil {
 		return nil, NewStackErrorf("error getting driver client for %v: %v", pc.MongoAddress(), err)
@@ -78,7 +79,7 @@ func NewProxyWithContext(pc ProxyConfig, ctx context.Context) (*Proxy, error) {
 	p.MongoClient = mongoClient
 	p.topology = extractTopology(mongoClient)
 
-	p.logger = p.NewLogger("proxy")
+	p.logger = NewLogger("proxy", pc.LogLevel, pc.Appenders)
 
 	return p, nil
 }
@@ -198,35 +199,59 @@ func (p *Proxy) ClearRemoteConnection(rsName string, additionalGracePeriodSec in
 }
 
 func (p *Proxy) InitializeServer() {
-	serverCtx, serverCancelCtx := context.WithCancel(p.Context)
-
-	server := Server{
-		p.Config.ServerConfig,
-		p.logger,
-		p,
-		serverCtx,
-		serverCancelCtx,
-		make(chan error, 1),
-		make(chan struct{}),
-		nil,
-		nil,
+	if p.Config.TCPServerConfig.Enabled {
+		tcpServer := NewTCPServer(
+			p.Config.TCPServerConfig,
+			p,
+			func(prefix string) *slogger.Logger { return NewLogger(prefix, p.Config.LogLevel, p.Config.Appenders) },
+		)
+		p.tcpServer = &tcpServer
 	}
-	p.server = &server
+
+	if p.Config.GRPCServerConfig.Enabled {
+		gRPCServer := NewGRPCServer(
+			p.Config.GRPCServerConfig,
+			p,
+			func(prefix string) *slogger.Logger { return NewLogger(prefix, p.Config.LogLevel, p.Config.Appenders) },
+		)
+		p.gRPCServer = &gRPCServer
+	}
 }
 
 func (p *Proxy) Run() error {
-	return p.server.Run()
+	var tcpErr, grpcErr error
+	var wg sync.WaitGroup
+	if p.tcpServer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tcpErr = p.tcpServer.Run()
+		}()
+	}
+	if p.gRPCServer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			grpcErr = p.gRPCServer.Run()
+		}()
+	}
+	wg.Wait()
+	return MergeErrors(tcpErr, grpcErr)
 }
 
 // called by a synched method
 func (p *Proxy) OnSSLConfig(sslPairs []*SSLPair) (ok bool, names []string, errs []error) {
-	return p.server.OnSSLConfig(sslPairs)
+	if p.tcpServer != nil {
+		return p.tcpServer.OnSSLConfig(sslPairs)
+	}
+
+	ok = true
+	return
 }
 
-func (p *Proxy) NewLogger(prefix string) *slogger.Logger {
-	filters := []slogger.TurboFilter{slogger.TurboLevelFilter(p.Config.LogLevel)}
+func NewLogger(prefix string, logLevel slogger.Level, appenders []slogger.Appender) *slogger.Logger {
+	filters := []slogger.TurboFilter{slogger.TurboLevelFilter(logLevel)}
 
-	appenders := p.Config.Appenders
 	if appenders == nil {
 		appenders = []slogger.Appender{slogger.StdOutAppender()}
 	}
@@ -308,12 +333,10 @@ func (p *Proxy) CreateWorker(session *Session) (ServerWorker, error) {
 			ps.isMetricsEnabled = true
 		}
 
-		session.conn = CheckedConn{session.conn.(net.Conn), ps.interceptor}
+		if session.IsTCPSession() {
+			session.conn = CheckedConn{session.conn.(net.Conn), ps.interceptor}
+		}
 	}
 
 	return ps, nil
-}
-
-func (p *Proxy) GetConnection(conn net.Conn) io.ReadWriteCloser {
-	return conn
 }
