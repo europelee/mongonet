@@ -55,7 +55,7 @@ func TestProxyMongosModeGRPCSanity(t *testing.T) {
 			bson.D{{"_id", 42}},
 		}},
 	}
-	err = sendAndRecvMsg(t, conn, insert)
+	_, err = sendAndRecvMsg(t, conn, insert)
 	if err != nil {
 		t.Error(err)
 	}
@@ -65,13 +65,15 @@ func TestProxyMongosModeGRPCSanity(t *testing.T) {
 		{"$db", "test"},
 		{"filter", bson.D{}},
 	}
-	err = sendAndRecvMsg(t, conn, find)
+	_, err = sendAndRecvMsg(t, conn, find)
 	if err != nil {
 		t.Error(err)
 	}
 }
 
-func sendAndRecvMsg(t *testing.T, conn *grpc.ClientConn, bson bson.D) error {
+func sendAndRecvMsg(t *testing.T, conn *grpc.ClientConn, bson bson.D) (bson.D, error) {
+	var resp primitive.D
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
@@ -81,13 +83,13 @@ func sendAndRecvMsg(t *testing.T, conn *grpc.ClientConn, bson bson.D) error {
 		ServerStreams: true,
 	}, "/mongonet/Send", grpc.ForceCodec(BytesCodec{}))
 	if err != nil {
-		return err
+		return resp, err
 	}
 
 	t.Logf("Sending gRPC msg: %v", bson)
 	doc, err := SimpleBSONConvert(bson)
 	if err != nil {
-		return err
+		return resp, err
 	}
 	cmd := &MessageMessage{
 		MessageHeader{
@@ -106,10 +108,10 @@ func sendAndRecvMsg(t *testing.T, conn *grpc.ClientConn, bson bson.D) error {
 	// send
 	in := cmd.Serialize()
 	if err := stream.SendMsg(&in); err != nil {
-		return err
+		return resp, err
 	}
 	if err := stream.CloseSend(); err != nil {
-		return err
+		return resp, err
 	}
 
 	// receive
@@ -122,39 +124,39 @@ func sendAndRecvMsg(t *testing.T, conn *grpc.ClientConn, bson bson.D) error {
 			break
 		}
 		if err != nil {
-			return err
+			return resp, err
 		}
 		m, err := ReadMessageFromBytes(out)
 		if err != nil {
-			return err
+			return resp, err
 		}
 		mm, ok := m.(*MessageMessage)
 		if !ok {
-			return fmt.Errorf("Unable to convert to MessageMessage")
+			return resp, fmt.Errorf("Unable to convert to MessageMessage")
 		}
-		msg, _, err := MessageMessageToBSOND(mm)
+		resp, _, err = MessageMessageToBSOND(mm)
 		if err != nil {
-			return err
+			return resp, err
 		}
-		t.Logf("Received gRPC response: %v", msg)
+		t.Logf("Received gRPC response: %v", resp)
 
 		// check response for { ok: 1 }
-		idx := BSONIndexOf(msg, "ok")
+		idx := BSONIndexOf(resp, "ok")
 		if idx < 0 {
-			return fmt.Errorf("can't find ok in response")
+			return resp, fmt.Errorf("can't find ok in response")
 		}
-		ok, _, err = GetAsBool(msg[idx])
+		ok, _, err = GetAsBool(resp[idx])
 		if err != nil {
-			return err
+			return resp, err
 		}
 		if !ok {
-			return fmt.Errorf("Command did not return ok")
+			return resp, fmt.Errorf("Command did not return ok")
 		}
 	}
 	if trailer != nil {
 		t.Logf("Received trailer: %v", trailer)
 	}
-	return nil
+	return resp, nil
 }
 
 func TestProxyMongosModeGRPCTransaction(t *testing.T) {
@@ -207,7 +209,7 @@ func TestProxyMongosModeGRPCTransaction(t *testing.T) {
 			bson.D{{"_id", 43}},
 		}},
 	}
-	err = sendAndRecvMsg(t, conn, insert)
+	_, err = sendAndRecvMsg(t, conn, insert)
 	if err != nil {
 		t.Error(err)
 	}
@@ -222,7 +224,7 @@ func TestProxyMongosModeGRPCTransaction(t *testing.T) {
 		}},
 		{"filter", bson.D{}},
 	}
-	err = sendAndRecvMsg(t, conn, find)
+	_, err = sendAndRecvMsg(t, conn, find)
 	if err != nil {
 		t.Error(err)
 	}
@@ -236,7 +238,7 @@ func TestProxyMongosModeGRPCTransaction(t *testing.T) {
 			{"id", id},
 		}},
 	}
-	err = sendAndRecvMsg(t, conn, commitTransaction)
+	_, err = sendAndRecvMsg(t, conn, commitTransaction)
 	if err != nil {
 		t.Error(err)
 	}
@@ -287,7 +289,7 @@ func TestProxyMongosModeGRPCCursor(t *testing.T) {
 			bson.D{{"_id", 49}},
 		}},
 	}
-	err = sendAndRecvMsg(t, conn, insert)
+	_, err = sendAndRecvMsg(t, conn, insert)
 	if err != nil {
 		t.Error(err)
 	}
@@ -299,7 +301,35 @@ func TestProxyMongosModeGRPCCursor(t *testing.T) {
 		{"limit", 10},
 		{"batchSize", 2},
 	}
-	err = sendAndRecvMsg(t, conn, find)
+	findResp, err := sendAndRecvMsg(t, conn, find)
+	if err != nil {
+		t.Error(err)
+	}
+
+	cursorIdx := BSONIndexOf(findResp, "cursor")
+	if cursorIdx < 0 {
+		t.Error(fmt.Errorf("cursor subdocument not found"))
+	}
+	cursor, _, err := GetAsBSON(findResp[cursorIdx])
+	if err != nil {
+		t.Error(err)
+	}
+	cursorIdIdx := BSONIndexOf(cursor, "id")
+	if cursorIdIdx < 0 {
+		t.Error(fmt.Errorf("cursor id not found"))
+	}
+	cursorId, ok := cursor[cursorIdIdx].Value.(int64)
+	if !ok {
+		t.Error(fmt.Errorf("cursor id was not of type int64"))
+	}
+
+	getMore := bson.D{
+		{"getMore", cursorId},
+		{"$db", "test"},
+		{"collection", "foo"},
+		{"batchSize", 2},
+	}
+	_, err = sendAndRecvMsg(t, conn, getMore)
 	if err != nil {
 		t.Error(err)
 	}

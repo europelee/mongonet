@@ -490,13 +490,12 @@ func TestGRPCServerCursorIdNotFound(t *testing.T) {
 	defer conn.Close()
 
 	// Test cursorId found
-	find := bson.D{
-		{"find", "foo"},
+	getMore := bson.D{
+		{"getMore", int64(42)},
 		{"$db", "test"},
-		{"cursor", bson.D{{"id", int64(42)}}},
-		{"filter", bson.D{}},
+		{"collection", "test"},
 	}
-	err = sendAndRecvMsg(t, conn, find, mongonet.CursorNotFoundErrorCode)
+	err = sendAndRecvMsg(t, conn, getMore, mongonet.CursorNotFoundErrorCode)
 	if err != nil {
 		t.Error(err)
 	}

@@ -585,31 +585,27 @@ func (s *GRPCServer) lookupPinnedSession(SSLServerName string, stream grpc.Serve
 					if !found {
 						return nil, m, NewMongoError(fmt.Errorf("Given transaction number %v does not match any in-progress transactions. The active transaction number is -1", txnNumber), TransactionNotFoundErrorCode, "NoSuchTransaction")
 					}
+					s.logger.Logf(slogger.DEBUG, "Session found with transaction %v %v/%v", SSLServerName, lsid, txnNumber)
 					return worker, m, nil
 				}
 			}
 		}
 
 		// check for a cursor id
-		cursorIdx := BSONIndexOf(cmd, "cursor")
-		if cursorIdx >= 0 {
-			cursor, _, err := GetAsBSON(cmd[cursorIdx])
-			if err != nil {
-				return nil, nil, fmt.Errorf("unable to get cursor as BSON %v", err)
+		getMoreIdx := BSONIndexOf(cmd, "getMore")
+		if getMoreIdx >= 0 {
+			var ok bool
+			cursorId, ok := cmd[getMoreIdx].Value.(int64)
+			if !ok {
+				return nil, nil, fmt.Errorf("getMore's cursor id was not of type int64")
 			}
-			cursorIdIdx := BSONIndexOf(cursor, "id")
-			if cursorIdIdx >= 0 {
-				cursorId, ok := cursor[cursorIdIdx].Value.(int64)
-				if !ok {
-					return nil, nil, fmt.Errorf("cursor id was not of type int64")
-				}
-				s.logger.Logf(slogger.DEBUG, "Looking up session by cursorId %v/%v", SSLServerName, cursorId)
-				worker, found := s.LookupSessionByCursorId(SSLServerName, cursorId)
-				if !found {
-					return nil, m, NewMongoError(fmt.Errorf("cursor id %v not found", cursorId), CursorNotFoundErrorCode, "CursorNotFound")
-				}
-				return worker, m, nil
+			s.logger.Logf(slogger.DEBUG, "Looking up session by cursorId %v/%v", SSLServerName, cursorId)
+			worker, found := s.LookupSessionByCursorId(SSLServerName, cursorId)
+			if !found {
+				return nil, m, NewMongoError(fmt.Errorf("cursor id %v not found", cursorId), CursorNotFoundErrorCode, "CursorNotFound")
 			}
+			s.logger.Logf(slogger.DEBUG, "Session found with cursorId %v/%v", SSLServerName, cursorId)
+			return worker, m, nil
 		}
 	default:
 		s.logger.Logf(slogger.DEBUG, "Skipping lookupPinnedWorker for message not of type MessageMessage (was %T)", message)
