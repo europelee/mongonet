@@ -30,5 +30,6 @@ $MONGO_DIR/mongo --port $MONGO_PORT --eval "rs.initiate({'_id': 'proxytest2', 'p
 
 sleep 10 # let replica sets reach steady state
 
+set -e
 go test -test.v -run TestProxyMongosMode
 go test -test.v -run TestCommon
