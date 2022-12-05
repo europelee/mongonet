@@ -198,6 +198,7 @@ type BSONWalkVisitor interface {
 }
 
 // BSONWalkAll - recursively walks the BSON doc and applies the visitor when encountering the fieldName
+// Passing in an empty fieldName applies the visitor on all fields
 // If delete_me is encountered, it'll return an empty document for that BSON doc
 // If remove_field is encountered, it'll return the BSON doc with the field omitted
 func BSONWalkAll(doc bson.D, fieldName string, visitor BSONWalkVisitor) (bson.D, error) {
@@ -205,7 +206,7 @@ func BSONWalkAll(doc bson.D, fieldName string, visitor BSONWalkVisitor) (bson.D,
 	docsToRemove := []int{}
 	for i := range current {
 		elemDoc := &(current)[i]
-		if elemDoc.Key == fieldName {
+		if elemDoc.Key == fieldName || fieldName == "" {
 			err := visitor.Visit(elemDoc)
 			if err != nil {
 				if err == DELETE_ME {

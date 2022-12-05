@@ -580,6 +580,63 @@ func TestBSONWalkAll9(test *testing.T) {
 	}
 }
 
+type intIncrementWalker struct{}
+
+func (i *intIncrementWalker) Visit(elem *bson.E) error {
+	if v, ok := elem.Value.(int); ok {
+		v++
+		elem.Value = v
+	}
+	return nil
+}
+
+func TestBSONWalkAll10(test *testing.T) {
+	doc := bson.D{
+		{"w", bson.D{
+			{"a", bson.D{
+				{"c", 27},
+				{"b", 37},
+			}},
+			{"b", 3},
+		}},
+	}
+	walker := &intIncrementWalker{}
+	doc, err := BSONWalkAll(doc, "c", walker)
+	if err != nil {
+		test.Errorf("unexpected error %s", err)
+	}
+	expectedDoc := bson.D{
+		{"w", bson.D{
+			{"a", bson.D{
+				{"c", 28},
+				{"b", 37},
+			}},
+			{"b", 3},
+		}},
+	}
+	if !reflect.DeepEqual(doc, expectedDoc) {
+		test.Fatalf("expected doc to be equal to expected but got %v", doc)
+	}
+
+	doc, err = BSONWalkAll(doc, "", walker)
+	if err != nil {
+		test.Errorf("unexpected error %s", err)
+	}
+	expectedDoc = bson.D{
+		{"w", bson.D{
+			{"a", bson.D{
+				{"c", 29},
+				{"b", 38},
+			}},
+			{"b", 4},
+		}},
+	}
+
+	if !reflect.DeepEqual(doc, expectedDoc) {
+		test.Fatalf("expected doc to be equal to expected but got %v", doc)
+	}
+}
+
 func docToRaw(doc bson.D) bson.Raw {
 	return bson.Raw(SimpleBSONConvertOrPanic(doc).BSON)
 }
