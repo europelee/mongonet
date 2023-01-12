@@ -201,8 +201,8 @@ func debugPrintCollContents(coll *mongo.Collection, tipe string, ctx context.Con
 }
 
 /*
-	the response interceptor will return a retry error if the client ran a find on `RetryOnRemoteDbNameForTests` and the local RS returned `{val: 10}`
-	We'll assert that the remote RS returns `{val: 20}`
+the response interceptor will return a retry error if the client ran a find on `RetryOnRemoteDbNameForTests` and the local RS returned `{val: 10}`
+We'll assert that the remote RS returns `{val: 20}`
 */
 func runProxyConnectionPerformanceRetryOnRemoteConns(iterations, mongoPort, proxyPort int, hostname string, logger *slogger.Logger, workers int, targetAvgLatencyMs, targetMaxLatencyMs int64, mode util.MongoConnectionMode,
 	mongoClientFactory util.ClientFactoryFunc,

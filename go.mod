@@ -1,6 +1,6 @@
 module github.com/mongodb/mongonet
 
-go 1.18
+go 1.19
 
 require (
 	github.com/go-test/deep v1.0.8

@@ -89,10 +89,10 @@ func doIteration(logger *slogger.Logger, hostname string, proxyPort int, mode ut
 }
 
 /*
-	DoConcurrencyTestRun - can be used by external applications to test out concurrency and pooling performance
-	preSetUpFunc will use a client over the underlying mongo
-	setupFunc, testFunc and cleanupFunc will use clients over the proxy
-	see full example on RunProxyConnectionPerformanceFindOne
+DoConcurrencyTestRun - can be used by external applications to test out concurrency and pooling performance
+preSetUpFunc will use a client over the underlying mongo
+setupFunc, testFunc and cleanupFunc will use clients over the proxy
+see full example on RunProxyConnectionPerformanceFindOne
 */
 func DoConcurrencyTestRun(logger *slogger.Logger,
 	hostname string, mongoPort, proxyPort int, mode util.MongoConnectionMode,
