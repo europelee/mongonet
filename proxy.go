@@ -204,6 +204,7 @@ func (p *Proxy) InitializeServer() {
 			p.Config.TCPServerConfig,
 			p,
 			func(prefix string) *slogger.Logger { return NewLogger(prefix, p.Config.LogLevel, p.Config.Appenders) },
+			p.Context,
 		)
 		p.tcpServer = &tcpServer
 	}
@@ -213,6 +214,7 @@ func (p *Proxy) InitializeServer() {
 			p.Config.GRPCServerConfig,
 			p,
 			func(prefix string) *slogger.Logger { return NewLogger(prefix, p.Config.LogLevel, p.Config.Appenders) },
+			p.Context,
 		)
 		p.gRPCServer = &gRPCServer
 	}

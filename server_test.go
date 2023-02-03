@@ -265,6 +265,7 @@ func TestTCPServer(t *testing.T) {
 		func(prefix string) *slogger.Logger {
 			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
 		},
+		context.Background(),
 	)
 
 	go server.Run()
@@ -328,6 +329,7 @@ func TestTCPServerWorkerWithContext(t *testing.T) {
 		func(prefix string) *slogger.Logger {
 			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
 		},
+		context.Background(),
 	)
 
 	go server.Run()
@@ -358,6 +360,7 @@ func TestTCPServerWorkerWithContext(t *testing.T) {
 
 func TestGRPCServer(t *testing.T) {
 	port := 9920
+	serverCtx := context.Background()
 	server := mongonet.NewGRPCServer(
 		mongonet.GRPCServerConfig{
 			true,
@@ -368,6 +371,7 @@ func TestGRPCServer(t *testing.T) {
 		func(prefix string) *slogger.Logger {
 			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
 		},
+		serverCtx,
 	)
 
 	go server.Run()
@@ -412,6 +416,7 @@ func TestGRPCServer(t *testing.T) {
 }
 
 func TestGRPCServerTransactionNotFound(t *testing.T) {
+	serverCtx := context.Background()
 	port := 9920
 	server := mongonet.NewGRPCServer(
 		mongonet.GRPCServerConfig{
@@ -423,6 +428,7 @@ func TestGRPCServerTransactionNotFound(t *testing.T) {
 		func(prefix string) *slogger.Logger {
 			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
 		},
+		serverCtx,
 	)
 
 	go server.Run()
@@ -464,6 +470,7 @@ func TestGRPCServerTransactionNotFound(t *testing.T) {
 }
 
 func TestGRPCServerCursorIdNotFound(t *testing.T) {
+	serverCtx := context.Background()
 	port := 9920
 	server := mongonet.NewGRPCServer(
 		mongonet.GRPCServerConfig{
@@ -475,6 +482,7 @@ func TestGRPCServerCursorIdNotFound(t *testing.T) {
 		func(prefix string) *slogger.Logger {
 			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
 		},
+		serverCtx,
 	)
 
 	go server.Run()
@@ -824,6 +832,7 @@ func TestServerWithTLS(t *testing.T) {
 		func(prefix string) *slogger.Logger {
 			return mongonet.NewLogger(prefix, slogger.DEBUG, []slogger.Appender{slogger.StdOutAppender()})
 		},
+		context.Background(),
 	)
 
 	ok, _, errs := syncTlsConfig.SetTlsConfig(nil, nil, tls.VersionTLS12, sslPair)

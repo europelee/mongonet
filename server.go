@@ -291,8 +291,8 @@ func (s *TCPServer) Close() {
 	<-s.doneChan
 }
 
-func NewTCPServer(config TCPServerConfig, serverWorkerFactory ServerWorkerFactory, loggerFactory LoggerFactory) TCPServer {
-	ctx, cancelCtx := context.WithCancel(context.Background())
+func NewTCPServer(config TCPServerConfig, serverWorkerFactory ServerWorkerFactory, loggerFactory LoggerFactory, ctx context.Context) TCPServer {
+	ctx, cancelCtx := context.WithCancel(ctx)
 	return TCPServer{
 		config,
 		loggerFactory("TCPServer"),
@@ -331,12 +331,15 @@ type GRPCServer struct {
 	loggerFactory LoggerFactory
 	workerFactory ServerWorkerFactory
 	grpcServer    *grpc.Server
+	ctx           context.Context
+	cancelCtx     context.CancelFunc
 
 	pinnedSessionMap     map[*pinnedSessionKey]ServerWorker
 	pinnedSessionMapLock sync.RWMutex
 }
 
-func NewGRPCServer(config GRPCServerConfig, serverWorkerFactory ServerWorkerFactory, loggerFactory LoggerFactory) GRPCServer {
+func NewGRPCServer(config GRPCServerConfig, serverWorkerFactory ServerWorkerFactory, loggerFactory LoggerFactory, ctx context.Context) GRPCServer {
+	ctx, cancelCtx := context.WithCancel(ctx)
 	return GRPCServer{
 		config:        config,
 		logger:        loggerFactory("GRPCServer"),
@@ -349,6 +352,8 @@ func NewGRPCServer(config GRPCServerConfig, serverWorkerFactory ServerWorkerFact
 			})),
 		pinnedSessionMap:     make(map[*pinnedSessionKey]ServerWorker),
 		pinnedSessionMapLock: sync.RWMutex{},
+		ctx:                  ctx,
+		cancelCtx:            cancelCtx,
 	}
 }
 
@@ -526,6 +531,22 @@ func (s *GRPCServer) Run() error {
 		return err
 	}
 
+	defer s.cancelCtx()
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-s.ctx.Done():
+				// It's okay if grpcServer.Stop() is called before grpcServer.Serve()
+				// The gprc server package is aware of this case and grpcServer.Serve() will error (not panic)
+				// It's also okay to call grpcServer.Stop() if the server has already been stopped
+				s.grpcServer.Stop()
+				return
+			}
+		}
+	}()
 	s.logger.Logf(slogger.WARN, "Starting local gRPC server %v\n", lis.Addr())
 	if err := s.grpcServer.Serve(lis); err != nil {
 		return err
