@@ -1,6 +1,7 @@
 # Please keep sorted
 
 *~
+bin/
 .idea
 .vscode/settings.json
 coverage.out

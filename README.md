@@ -1,5 +1,7 @@
 # mongonet - mongo wire protocol tools
 
+**a fork of mongodb mongonet for some different trying about go driver**  
+
 The purpose of this library is to have a number of low level tools for building a variety of things.
 This is not a driver, though could be turned into one if someone wanted.
 
@@ -19,3 +21,6 @@ To Start
 To use
     > db.adminCommand("sni")
     { "sniName" : "local.10gen.cc", "ok" : 1 }
+
+## msg_tester
+a low level trying on mongo client send/recv
