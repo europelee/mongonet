@@ -22,7 +22,8 @@ type SimpleBSON struct {
 }
 
 func SimpleBSONConvert(d interface{}) (SimpleBSON, error) {
-	raw, err := bson.MarshalWithRegistry(bsonRegistry, d)
+	//raw, err := bson.MarshalWithRegistry(bsonRegistry, d)
+	raw, err := bson.Marshal(d)
 	if err != nil {
 		return SimpleBSON{}, err
 	}

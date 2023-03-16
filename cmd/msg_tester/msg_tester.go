@@ -19,7 +19,7 @@ import (
 	"go.mongodb.org/mongo-driver/x/mongo/driver/topology"
 )
 
-func encode(cmd bson.D) []byte {
+func encode(cmd interface{}) []byte {
 	sb, err := mongonet.SimpleBSONConvert(cmd)
 	if err != nil {
 		log.Fatal(err)
@@ -141,12 +141,19 @@ func testlongconn(client *mongo.Client) {
 			{"u", firstUpdate},
 			{"upsert", true},
 		}
-
-		cmd := bson.D{
-			{"update", "users"},
-			{"updates", []interface{}{item}},
-			{"ordered", false},
-			{"$db", "accounts"},
+		/*
+			cmd := bson.D{
+				{"update", "users"},
+				{"updates", []interface{}{item}},
+				{"ordered", false},
+				{"$db", "accounts"},
+			}
+		*/
+		cmd := bson.M{
+			"update":  "users",
+			"updates": []interface{}{item},
+			"ordered": false,
+			"$db":     "accounts",
 		}
 		err := send(conn, encode(cmd))
 		if err != nil {
