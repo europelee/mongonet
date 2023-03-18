@@ -24,7 +24,7 @@ func encode(cmd interface{}) []byte {
 	if err != nil {
 		log.Fatal(err)
 	}
-
+	fmt.Println(bson.Raw(sb.BSON).String())
 	newmsg := &mongonet.MessageMessage{
 		mongonet.MessageHeader{
 			0,
@@ -98,21 +98,29 @@ func send(conn driver.Connection, b []byte) error {
 	if mm, ok := resp.(*mongonet.MessageMessage); ok {
 		for _, sec := range mm.Sections {
 			if bodySection, ok := sec.(*mongonet.BodySection); ok && bodySection != nil {
-				respBsonD, err := bodySection.Body.ToBSOND()
+				res, err := bson.Raw(bodySection.Body.BSON).LookupErr("ok")
 				if err != nil {
 					log.Fatal(err)
 				}
-				respBsonD.Map()
-				for i := range respBsonD {
-					fmt.Println(respBsonD[i].Key, respBsonD[i].Value)
-					if respBsonD[i].Key == "ok" {
-						if int(respBsonD[i].Value.(float64)) == 0 {
-							return fmt.Errorf("fail")
+				fmt.Println(res)
+				return nil
+				/*
+					respBsonD, err := bodySection.Body.ToBSOND()
+					if err != nil {
+						log.Fatal(err)
+					}
+					respBsonD.Map()
+					for i := range respBsonD {
+						fmt.Println(respBsonD[i].Key, respBsonD[i].Value)
+						if respBsonD[i].Key == "ok" {
+							if int(respBsonD[i].Value.(float64)) == 0 {
+								return fmt.Errorf("fail")
+							}
 						}
 					}
-				}
-				fmt.Println("res", respBsonD)
-				return nil
+					fmt.Println("res", respBsonD)
+					return nil
+				*/
 			}
 		}
 	} else {
@@ -127,33 +135,56 @@ func testlongconn(client *mongo.Client) {
 	defer conn.Close()
 	i := 0
 	for {
+		fmt.Println("-------------------------------------------", i)
 		if i > 5 {
 			i = 0
 		}
 		key := fmt.Sprintf("user%d", i)
-		firstUpdate := bson.D{{"$set", bson.D{{"pop2", 41334}}}}
-		item := bson.D{
-			//{"q", bson.D{{"username", key}, {"pop", 444}}},
-			{"q", bson.D{bson.E{Key: "$and", Value: bson.A{
+		firstUpdate := bson.D{{"$set", bson.D{{"pop2", 77777}}}}
+
+		item := bson.M{
+			"u":      firstUpdate,
+			"upsert": false,
+			"q": bson.D{bson.E{Key: "$and", Value: bson.A{
+				bson.D{{"username", key}},
+				bson.D{{"pop", 44455555555}},
+			}}},
+		}
+		item1 := bson.M{
+			"u":      firstUpdate,
+			"upsert": false,
+			"q": bson.D{bson.E{Key: "$and", Value: bson.A{
 				bson.D{{"username", key}},
 				bson.D{{"pop", 444}},
-			}}}},
-			{"u", firstUpdate},
-			{"upsert", true},
+			}}},
 		}
 		/*
-			cmd := bson.D{
-				{"update", "users"},
-				{"updates", []interface{}{item}},
-				{"ordered", false},
-				{"$db", "accounts"},
+				item := bson.D{
+					//{"q", bson.D{{"username", key}, {"pop", 444}}},
+					{"q", bson.D{bson.E{Key: "$and", Value: bson.A{
+						bson.D{{"username", key}},
+						bson.D{{"pop", 44455555555}},
+					}}}},
+					{"u", firstUpdate},
+					{"upsert", false},
+				}
+
+
+
+			cmd := bson.M{
+				"update":  "users",
+				"updates": []interface{}{item},
+				"ordered": false,
+				"$db":     "accounts",
 			}
 		*/
-		cmd := bson.M{
-			"update":  "users",
-			"updates": []interface{}{item},
-			"ordered": false,
-			"$db":     "accounts",
+		cmd := bson.D{
+
+			{"update", "users"},
+			{"updates", []interface{}{item, item1}},
+			{"ordered", false},
+			{"writeConcern", bson.M{"w": "majority"}},
+			{"$db", "accounts"},
 		}
 		err := send(conn, encode(cmd))
 		if err != nil {
@@ -166,7 +197,50 @@ func testlongconn(client *mongo.Client) {
 	}
 }
 
+func testBsonOp() {
+	key := "user02"
+
+	firstUpdate := bson.D{{"$set", bson.D{{"pop2", 41334}}}}
+	/*item := bson.D{
+		//{"q", bson.D{{"username", key}, {"pop", 444}}},
+		{"q", bson.D{bson.E{Key: "$and", Value: bson.A{
+			bson.D{{"username", key}},
+			bson.D{{"pop", 444}},
+		}}}},
+		{"u", firstUpdate},
+		{"upsert", false},
+	}*/
+	item := bson.M{
+		//{"q", bson.D{{"username", key}, {"pop", 444}}},
+		"q": bson.D{bson.E{Key: "$and", Value: bson.A{
+			bson.D{{"username", key}},
+			bson.D{{"pop", 444}},
+		}}},
+		"u":      firstUpdate,
+		"upsert": false,
+	}
+
+	cmd := bson.D{
+		{"update", "users"},
+		{"updates", []interface{}{item}},
+		{"ordered", false},
+		{"$db", "accounts"},
+	}
+	sb, err := mongonet.SimpleBSONConvert(cmd)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(bson.Raw(sb.BSON).String())
+	res, err := bson.Raw(sb.BSON).LookupErr("updates")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(bson.Raw(res.Array().Index(0).Value().Value).Lookup("u"))
+}
+
 func main() {
+	//testBsonOp()
+	//return
 	host := "127.0.0.1"
 	port := "27017"
 	uri := fmt.Sprintf("mongodb://%s:%s/?replicaSet=rs0", host, port)
