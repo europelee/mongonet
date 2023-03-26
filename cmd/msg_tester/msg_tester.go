@@ -201,6 +201,13 @@ func testBsonOp() {
 	key := "user02"
 
 	firstUpdate := bson.D{{"$set", bson.D{{"pop2", 41334}}}}
+	others := bson.D{
+		{"ordered", false},
+		{"writeConcern", bson.M{"w": "majority"}},
+	}
+	firstUpdate = append(firstUpdate, others...)
+	fmt.Println(firstUpdate)
+	return
 	/*item := bson.D{
 		//{"q", bson.D{{"username", key}, {"pop", 444}}},
 		{"q", bson.D{bson.E{Key: "$and", Value: bson.A{
@@ -239,8 +246,8 @@ func testBsonOp() {
 }
 
 func main() {
-	//testBsonOp()
-	//return
+	testBsonOp()
+	return
 	host := "127.0.0.1"
 	port := "27017"
 	uri := fmt.Sprintf("mongodb://%s:%s/?replicaSet=rs0", host, port)
