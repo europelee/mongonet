@@ -197,7 +197,57 @@ func testlongconn(client *mongo.Client) {
 	}
 }
 
+func ParseValue(result interface{}) error {
+	uu := bson.D{{"f1", "v1"}}
+	uur, _ := bson.Marshal(uu)
+	uu2 := bson.D{{"f1", "v11"}}
+	uur2, _ := bson.Marshal(uu2)
+	cmd := bson.D{
+		{"update", "users"},
+		{"updates", uur},
+		{"ordered", false},
+		{"$db", "accounts"},
+	}
+	cmd2 := bson.D{
+		{"update", "users2"},
+		{"updates", uur2},
+		{"ordered", true},
+		{"$db", "accounwwts"},
+	}
+	fin := bson.D{{"s1", cmd}, {"s2", cmd2}}
+	if raw, err := bson.Marshal(fin); err != nil {
+		return err
+	} else {
+		if err := bson.Unmarshal(raw, result); err != nil {
+			return err
+		}
+
+	}
+	return nil
+}
+
+type upModel struct {
+	Update  string `bson:"update"`
+	Updates []byte `bson:"updates"`
+	Order   bool   `bson:"ordered"`
+	DB      string `bson:"$db"`
+}
+
+type kv struct {
+	F string `bson:"f1"`
+}
+
 func testBsonOp() {
+	oo := make(map[string]*upModel)
+	if err := ParseValue(&oo); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(oo["s1"], oo["s2"])
+	fmt.Printf("%T", oo["s1"].Updates)
+	var result kv
+	bson.Unmarshal(oo["s2"].Updates, &result)
+	fmt.Println("ss", result)
+	return
 	key := "user02"
 
 	firstUpdate := bson.D{{"$set", bson.D{{"pop2", 41334}}}}
