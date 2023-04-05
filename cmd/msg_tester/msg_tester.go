@@ -198,9 +198,12 @@ func testlongconn(client *mongo.Client) {
 }
 
 func ParseValue(result interface{}) error {
-	uu := bson.D{{"f1", "v1"}}
-	uur, _ := bson.Marshal(uu)
-	uu2 := bson.D{{"f1", "v11"}}
+	uu := bson.D{{"f", bson.A{"ss"}}}
+	uur, err2 := bson.Marshal(uu)
+	if err2 != nil {
+		log.Fatal("ss", err2)
+	}
+	uu2 := bson.D{{"kk", bson.A{bson.D{{"f1", "v11"}}}}}
 	uur2, _ := bson.Marshal(uu2)
 	cmd := bson.D{
 		{"update", "users"},
@@ -244,9 +247,9 @@ func testBsonOp() {
 	}
 	fmt.Println(oo["s1"], oo["s2"])
 	fmt.Printf("%T", oo["s1"].Updates)
-	var result kv
+	var result map[string][]*kv
 	bson.Unmarshal(oo["s2"].Updates, &result)
-	fmt.Println("ss", result)
+	fmt.Println("ss", result["kk"][0])
 	return
 	key := "user02"
 
