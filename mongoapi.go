@@ -50,7 +50,7 @@ func RunCommandUsingRawBSON(cmd bson.D, client *mongo.Client, goctx context.Cont
 		return nil, err
 	}
 
-	ret, err := conn.ReadWireMessage(goctx, nil)
+	ret, err := conn.ReadWireMessage(goctx)
 	if err != nil {
 		return nil, err
 	}

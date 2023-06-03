@@ -543,7 +543,7 @@ func (ps *ProxySession) doLoop(m Message, mongoConn *MongoConnectionWrapper, ret
 		// Read message back from mongo
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "reading data from mongo conn id=%v remoteRs=%s", mongoConn.conn.ID(), remoteRs)
 		dbRoundTripTimerStart = time.Now()
-		ret, err := mongoConn.conn.ReadWireMessage(ps.proxy.Context, nil)
+		ret, err := mongoConn.conn.ReadWireMessage(ps.proxy.Context)
 		if err != nil {
 			ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "error reading wire message mongo conn id=%v remoteRs=%s. err=%v", mongoConn.conn.ID(), remoteRs, err)
 			if ps.isMetricsEnabled {

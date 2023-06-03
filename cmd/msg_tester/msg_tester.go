@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
+	"flag"
 	"fmt"
 	"log"
+	"os"
 	"reflect"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -76,7 +80,7 @@ func getConn(mc *mongo.Client) driver.Connection {
 	}
 	conn, err := srv.Connection(context.TODO())
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Connection", err)
 	}
 	return conn
 }
@@ -84,23 +88,23 @@ func getConn(mc *mongo.Client) driver.Connection {
 func send(conn driver.Connection, b []byte) error {
 	goctx := context.TODO()
 	if err := conn.WriteWireMessage(goctx, b); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	ret, err := conn.ReadWireMessage(goctx, nil)
+	ret, err := conn.ReadWireMessage(goctx)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	resp, err := mongonet.ReadMessageFromBytes(ret)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if mm, ok := resp.(*mongonet.MessageMessage); ok {
 		for _, sec := range mm.Sections {
 			if bodySection, ok := sec.(*mongonet.BodySection); ok && bodySection != nil {
 				res, err := bson.Raw(bodySection.Body.BSON).LookupErr("ok")
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 				fmt.Println(res)
 				return nil
@@ -130,21 +134,49 @@ func send(conn driver.Connection, b []byte) error {
 	return nil
 }
 
-func testlongconn(client *mongo.Client) {
-	conn := getConn(client)
-	defer conn.Close()
+func MD5Bytes(data []byte) []byte {
+	checksum := md5.Sum(data)
+	return checksum[:]
+}
+
+func longSideNativeCli(client *mongo.Client) {
+	log.Println("longSideNativeCli")
+	var res bson.Raw
+	coll := client.Database("accounts").Collection("users")
+	err := coll.FindOne(context.TODO(),
+		bson.M{"pop": 444},
+	).Decode(&res)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res, MD5Bytes(res))
+	firstUpdate := bson.D{
+		{"$set", bson.D{{"_crc", MD5Bytes(res)}}}}
+	//	firstUpdate := bson.D{
+	//		{"$set", bson.E{"_crc", MD5Bytes(res)}}}
+	fmt.Println(firstUpdate)
+	req := mongo.NewUpdateOneModel().SetFilter(bson.M{"pop": "444"}).SetUpdate(firstUpdate).SetUpsert(true)
+	//req := mongo.NewReplaceOneModel().SetFilter(mFilter).SetReplacement(firstUpdate).SetUpsert(true)
+	opts2 := options.BulkWrite().SetOrdered(false)
+	_, err = coll.BulkWrite(context.TODO(), []mongo.WriteModel{req}, opts2)
+	if err != nil {
+		log.Fatal("xx", err)
+	}
+}
+
+func oneConn(conn driver.Connection, client *mongo.Client) {
 	i := 0
 	for {
-		fmt.Println("-------------------------------------------", i)
-		if i > 5 {
-			i = 0
+		fmt.Println("-------------------------------------------", i, conn.Address(), conn.ID())
+		if i > 15 {
+			break
 		}
 		key := fmt.Sprintf("user%d", i)
 		firstUpdate := bson.D{{"$set", bson.D{{"pop2", 77777}}}}
 
 		item := bson.M{
 			"u":      firstUpdate,
-			"upsert": false,
+			"upsert": true,
 			"q": bson.D{bson.E{Key: "$and", Value: bson.A{
 				bson.D{{"username", key}},
 				bson.D{{"pop", 44455555555}},
@@ -152,7 +184,7 @@ func testlongconn(client *mongo.Client) {
 		}
 		item1 := bson.M{
 			"u":      firstUpdate,
-			"upsert": false,
+			"upsert": true,
 			"q": bson.D{bson.E{Key: "$and", Value: bson.A{
 				bson.D{{"username", key}},
 				bson.D{{"pop", 444}},
@@ -192,9 +224,30 @@ func testlongconn(client *mongo.Client) {
 			conn.Close()
 			conn = getConn(client)
 		}
+
+		//longSideNativeCli(client)
 		i++
 		time.Sleep(2 * time.Second)
+		conn.Close()
 	}
+	//conn.Close()
+}
+func testlongconn(client *mongo.Client) {
+	conn := getConn(client)
+	defer conn.Close()
+	//longSideNativeCli(client)
+
+	//return
+	oneConn(conn, client)
+
+	select {}
+	//client.Disconnect(context.TODO())
+	select {}
+	log.Println("try native client again....")
+	longSideNativeCli(client)
+	longSideNativeCli(client)
+	longSideNativeCli(client)
+	select {}
 }
 
 func ParseValue(result interface{}) error {
@@ -229,18 +282,68 @@ func ParseValue(result interface{}) error {
 	return nil
 }
 
+type dbt string
+
 type upModel struct {
 	Update  string `bson:"update"`
 	Updates []byte `bson:"updates"`
 	Order   bool   `bson:"ordered"`
-	DB      string `bson:"$db"`
+	DB      dbt    `bson:"$db"`
 }
 
 type kv struct {
 	F string `bson:"f1"`
 }
 
+type ssb struct {
+	A  int    `bson:"a,omitempty"`
+	AA string `bson:"aa,omitempty"`
+}
+
+type sbb struct {
+	B   string
+	SSB ssb `bson:"ssbs"`
+}
+
+type ABC struct {
+	A int    `bson:"a,omitempty"`
+	B string `bson:"b"`
+	C []int  `bson:"c,omitempty"`
+}
+
+type inABC struct {
+	ABC
+}
+
+func ttsbb() {
+	ia := ABC{B: "33"}
+	raw, err := bson.Marshal(&ia)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var ia2 ABC
+	err = bson.Unmarshal(raw, &ia2)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println(ia2)
+	return
+	so := sbb{B: "2", SSB: ssb{A: 33}}
+	raw, err = bson.Marshal(&so)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var soo sbb
+	err = bson.Unmarshal(raw, &soo)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println(soo, soo.SSB)
+	os.Exit(0)
+}
+
 func testBsonOp() {
+	ttsbb()
 	oo := make(map[string]*upModel)
 	if err := ParseValue(&oo); err != nil {
 		log.Fatal(err)
@@ -298,15 +401,31 @@ func testBsonOp() {
 	fmt.Println(bson.Raw(res.Array().Index(0).Value().Value).Lookup("u"))
 }
 
+var host = "127.0.0.1"
+var port = "27017"
+var mongoAcc string
+
+func init() {
+	flag.StringVar(&host, "host", host, "host")
+	flag.StringVar(&port, "port", port, "port")
+	flag.StringVar(&mongoAcc, "mongoAcc", mongoAcc, "mongoAcc")
+}
+
 func main() {
-	testBsonOp()
-	return
-	host := "127.0.0.1"
-	port := "27017"
+	flag.Parse()
+	//testBsonOp()
+	//return
 	uri := fmt.Sprintf("mongodb://%s:%s/?replicaSet=rs0", host, port)
 	clientOptions := options.Client().ApplyURI(uri)
 	clientOptions.SetMaxPoolSize(10)
 	clientOptions.SetWriteConcern(writeconcern.New(writeconcern.W(1), writeconcern.J(false)))
+	if mongoAcc != "" {
+		fvals := strings.Split(mongoAcc, ":")
+		user := fvals[0]
+		password := fvals[1]
+		credential := options.Credential{Username: user, Password: password}
+		clientOptions.SetAuth(credential)
+	}
 	client, err := mongo.Connect(context.TODO(), clientOptions)
 	if err != nil {
 		log.Fatal(err)
