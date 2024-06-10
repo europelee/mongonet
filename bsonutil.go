@@ -2,23 +2,20 @@ package mongonet
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/x/bsonx"
-)
-
-var (
-	bsonRegistry = bson.NewRegistryBuilder().
-		RegisterCodec(reflect.TypeOf(primitive.D{}), bsonx.ReflectionFreeDCodec).
-		Build()
 )
 
 type SimpleBSON struct {
 	Size int32
 	BSON []byte
+}
+
+func (sb SimpleBSON) Copy(loc *int, buf []byte) {
+	copy(buf[*loc:], sb.BSON)
+	*loc = *loc + int(sb.Size)
 }
 
 func SimpleBSONConvert(d interface{}) (SimpleBSON, error) {
@@ -30,23 +27,13 @@ func SimpleBSONConvert(d interface{}) (SimpleBSON, error) {
 	return SimpleBSON{int32(len(raw)), raw}, nil
 }
 
-func SimpleBSONConvertOrPanic(d interface{}) SimpleBSON {
-	raw, err := bson.MarshalWithRegistry(bsonRegistry, d)
-	if err != nil {
-		panic(err)
-	}
-	return SimpleBSON{int32(len(raw)), raw}
-}
-
-func (sb SimpleBSON) ToBSOND() (bson.D, error) {
+func SimpleBsonToBSOND(sb *SimpleBSON) (bson.D, error) {
 	t := bson.D{}
-	err := bson.UnmarshalWithRegistry(bsonRegistry, sb.BSON, &t)
-	return t, err
-}
-
-func (sb SimpleBSON) Copy(loc *int, buf []byte) {
-	copy(buf[*loc:], sb.BSON)
-	*loc = *loc + int(sb.Size)
+	if err := bson.Unmarshal(sb.BSON, &t); err != nil {
+		return t, err
+	} else {
+		return t, err
+	}
 }
 
 func parseSimpleBSON(b []byte) (SimpleBSON, error) {

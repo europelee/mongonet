@@ -411,10 +411,64 @@ func init() {
 	flag.StringVar(&mongoAcc, "mongoAcc", mongoAcc, "mongoAcc")
 }
 
+func decode(raw []byte) {
+	resp, err := mongonet.ReadMessageFromBytes(raw)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var msg *mongonet.MessageMessage
+	var ok bool
+	if msg, ok = resp.(*mongonet.MessageMessage); !ok {
+		err := fmt.Errorf("not mongonet.MessageMessage")
+		log.Fatal(err)
+	}
+	var sb *mongonet.SimpleBSON
+	for _, sec := range msg.Sections {
+		if bodySection, ok := sec.(*mongonet.BodySection); ok && bodySection != nil {
+			sb = &bodySection.Body
+			break
+		}
+	}
+	cmd, err := mongonet.SimpleBsonToBSOND(sb)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(cmd)
+}
+func testCodec() {
+	key := "sss"
+	firstUpdate := bson.D{{"$set", bson.D{{"pop2", 77777}}}}
+	item := bson.M{
+		"u":      firstUpdate,
+		"upsert": true,
+		"q": bson.D{bson.E{Key: "$and", Value: bson.A{
+			bson.D{{"username", key}},
+			bson.D{{"pop", 44455555555}},
+		}}},
+	}
+	item1 := bson.M{
+		"u":      firstUpdate,
+		"upsert": true,
+		"q": bson.D{bson.E{Key: "$and", Value: bson.A{
+			bson.D{{"username", key}},
+			bson.D{{"pop", 444}},
+		}}},
+	}
+	cmd := bson.D{
+		{"update", "users"},
+		{"updates", []interface{}{item, item1}},
+		{"ordered", false},
+		{"writeConcern", bson.M{"w": "majority"}},
+		{"$db", "accounts"},
+	}
+	fmt.Println("ori", cmd)
+	raw := encode(cmd)
+	decode(raw)
+}
 func main() {
 	flag.Parse()
-	//testBsonOp()
-	//return
+	testCodec()
+	return
 	uri := fmt.Sprintf("mongodb://%s:%s/?replicaSet=rs0", host, port)
 	clientOptions := options.Client().ApplyURI(uri)
 	clientOptions.SetMaxPoolSize(10)
@@ -432,33 +486,34 @@ func main() {
 	}
 	testlongconn(client)
 	return
-	cmd := bson.D{{"ping", 1}, {"$db", "admin"}}
+	//cmd := bson.D{{"ping", 1}, {"$db", "admin"}}
 	//key := "user02"
 	/*
-		firstUpdate := bson.D{{"$set", bson.D{{"pop2", 41334}}}}
-		item := bson.D{
-			//{"q", bson.D{{"username", key}, {"pop", 444}}},
-			{"q", bson.D{bson.E{Key: "$and", Value: bson.A{
-				bson.D{{"username", key}},
-				bson.D{{"pop", 444}},
-			}}}},
-			{"u", firstUpdate},
-			{"upsert", false},
-		}
+			firstUpdate := bson.D{{"$set", bson.D{{"pop2", 41334}}}}
+			item := bson.D{
+				//{"q", bson.D{{"username", key}, {"pop", 444}}},
+				{"q", bson.D{bson.E{Key: "$and", Value: bson.A{
+					bson.D{{"username", key}},
+					bson.D{{"pop", 444}},
+				}}}},
+				{"u", firstUpdate},
+				{"upsert", false},
+			}
 
-		cmd := bson.D{
-			{"update", "users"},
-			{"updates", []interface{}{item}},
-			{"ordered", false},
-			//{"$db", "accounts"},
+			cmd := bson.D{
+				{"update", "users"},
+				{"updates", []interface{}{item}},
+				{"ordered", false},
+				//{"$db", "accounts"},
+			}
+			//req := encode(cmd)
+			//mainq(client, cmd)
+			//return
+
+		response, err := mongonet.RunCommandUsingRawBSON(cmd, client, context.TODO())
+		if err != nil {
+			log.Fatal(err)
 		}
-		//req := encode(cmd)
-		//mainq(client, cmd)
-		//return
+		fmt.Println(response)
 	*/
-	response, err := mongonet.RunCommandUsingRawBSON(cmd, client, context.TODO())
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(response)
 }
